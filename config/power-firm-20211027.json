@@ -5,7 +5,8 @@
     "energy-price": 120,
     "_desc1": "energy price is a synthetic price",
     "material-price": 100,
-    "_desc2": "material price is a synthetic price"
+    "_desc2": "material price is a synthetic price",
+    "product-price": 100
   },
   "CarbonPrice": {
     "carbon-price": [
@@ -43,8 +44,8 @@
     "last-output": 36
   },
   "Factors": {
-    "alpha0": 0.5,
-    "beta0": 1.5,
+    "alpha0": 160,
+    "beta0": -0.2,
     "sigma": 0.8,
     "_desc1": "alpha0/beta0 are params for demand function between price and output, range: 15~200",
     "thetai": 1.2,
@@ -69,6 +70,8 @@
     "abate-investment": 0
   },
   "Trade": {
+    "divide": 200,
+    "_desc": "divide base to control the daily trading behavior of firms",
     "traded-allowance": [
       0
     ],

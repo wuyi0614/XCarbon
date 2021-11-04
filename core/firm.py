@@ -210,10 +210,13 @@ class RegulatedFirm(BaseFirm):
             'product-price': 0, 'last-product-price': 0
         }
         self.CarbonPrice = {'carbon-price': [0], 'last-carbon-price': [0], 'expected-carbon-price': [0]}
+        self.Revenue = {'product-revenue': 0, 'last-product-revenue': 0,
+                        'carbon-revenue': 0, 'last-carbon-revenue': 0,
+                        'fine': 0}
 
         # because there is only one economic sector here in the model,
         # for the same production function, it has fixed parameters
-        self.Factors = {'alpha0': 0.2, 'beta0': 2.5,  # params for demand function
+        self.Factors = {'alpha0': 160, 'beta0': -0.2,  # params for demand function
                         'alpha1': 1000, 'alpha2': 0.3, 'sigma': 5/4,  # params for production function
                         'theta2': 0, 'gamma2': 0,  # params for logistic prob function
                         'decay': 1}  # annual decay rate of allocation
@@ -230,6 +233,7 @@ class RegulatedFirm(BaseFirm):
         self.Allocation = {'allocation': 0, 'last-allocation': 0}
 
         # trade decision
+        self.Div = spec.get('divide', 300)
         self.Trade = {'traded-allowance': [0], 'last-traded-allowance': [0],
                       'price-pressure-ratio': 0, 'quantity-pressure-ratio': 0}
 
@@ -303,8 +307,8 @@ class RegulatedFirm(BaseFirm):
         pi0 = self.Output['last-output']
         # make sure rho0/rho1/rho2 have a bigger value, rho1 and rho2 are relatively fixed values
         rho0 = 1 - 1 / factors['sigma']  # NB. rho0 must be positive
-        rho1 = price['energy-price'] - mean(*carbon_price['last-carbon-price']) * emission_factor['energy-factor']
-        rho2 = price['material-price'] - mean(*carbon_price['last-carbon-price']) * emission_factor['material-factor']
+        rho1 = price['energy-price'] - mean(carbon_price['last-carbon-price']) * emission_factor['energy-factor']
+        rho2 = price['material-price'] - mean(carbon_price['last-carbon-price']) * emission_factor['material-factor']
 
         # TODO: rho1/rho2 must not be zero
         rho1 = rho1 if rho1 != 0 else 0.1
@@ -346,12 +350,12 @@ class RegulatedFirm(BaseFirm):
         self.Position.update({'position': self.Allocation['allocation'] - emission_all})
 
     def _action_abatement(self):
-        """Firms determine how much abatement they want to invest"""
+        """Firms determine how much abatement they want to invest (yearly basis)"""
         carbon = self.CarbonPrice
         abate = self.Abatement
         position = self.Position
 
-        mean_carbon_price = mean(*carbon['last-carbon-price'])
+        mean_carbon_price = mean(carbon['last-carbon-price'])
         # compute the actual abatement volume and abatement investment
         abate_opt = (mean_carbon_price * position['position']) / (abate['abate-cost'] - mean_carbon_price)
         self._record(abate=abate_opt)
@@ -366,8 +370,10 @@ class RegulatedFirm(BaseFirm):
         # update abatement params
         self.Abatement.update({"abate": abate_opt, "abate-investment": abate_inv})
         # update position with abatement
+        trade_position = position['position'] - abate_opt
         self.Position.update({'last-trade-position': position['trade-position']})
-        self.Position.update({'trade-position': position['position'] - abate_opt})
+        self.Position.update({'trade-position': trade_position,
+                              'daily-trade-position': trade_position / self.Div})
 
     def _action_trade_decision(self):
         """Trade decision happens on a specific frequency basis (usually the daily basis)"""
@@ -381,6 +387,7 @@ class RegulatedFirm(BaseFirm):
         # compute the expected carbon price according its holdings
         current_carbon_price = carbon['carbon-price'][-1]
         # use `-` to reverse the curve of `trade-position` because more postive holdings will lower the price
+        # TODO: the pricing function determines that buyer's price will not exceed seller's
         exp_carbon_price = current_carbon_price * logistic_prob(theta=factors['thetai'],
                                                                 gamma=factors['gammai'],
                                                                 x=-position['trade-position'])
@@ -389,10 +396,10 @@ class RegulatedFirm(BaseFirm):
         trade_position = position['trade-position']
         # test if it's under pressure either from price or quantity
         if self.Step > 3:  # only when the trading periods go over 4 steps
-            if position['trade-position'] < 0:
+            if trade_position < 0:
                 price_pressure_ratio = current_carbon_price / mean(carbon['carbon-price'][-4: -1])
             else:  # if firms are holding excessive allowances, they have pressure to sell them more quickly
-                price_pressure_ratio = mean(carbon['carbon-price'][-4: -1]) / carbon['carbon-price']
+                price_pressure_ratio = mean(carbon['carbon-price'][-4: -1]) / current_carbon_price
 
             price_drive_position = price_pressure_ratio * trade_position
             qty_drive_position = trade_position
@@ -405,11 +412,16 @@ class RegulatedFirm(BaseFirm):
                     qty_drive_position = qty_drive_position * qty_pressure_ratio
 
             if position['trade-position'] < 0:
-                position_ = min([position['trade-position'], price_drive_position, qty_drive_position])
+                position_ = min([trade_position, price_drive_position, qty_drive_position])
             else:
-                position_ = max([position['trade-position'], price_drive_position, qty_drive_position])
+                position_ = max([trade_position, price_drive_position, qty_drive_position])
             # update the trade position
             self.Position.update({'trade-position': position_})
+
+    def _action_revenue(self):
+        """Firms accounts their revenue at the end of the year and affect the next-year's plan (production)"""
+        # NB. remember to collect the revenue/cost from carbon trading
+        pass
 
     def _trade(self, high, mean_, low):
         """Firm decides a transaction according to its trading needs"""
@@ -433,9 +445,10 @@ class RegulatedFirm(BaseFirm):
         exp_carbon_price = carbon['expected-carbon-price'][-1]
 
         # TODO: apply a better strategy to update firm's expected carbon price
+        # agent trades on a daily basis so it should be divided into even shares
         order = Order(price=exp_carbon_price,
                       mode='sell' if position['trade-position'] > 0 else 'buy',
-                      quantity=position['trade-position'],
+                      quantity=position['daily-trade-position'],
                       offerer_id=self.uid)
 
         self._Orders['order'] += [order.dict()]  # only for cache
@@ -454,24 +467,21 @@ class RegulatedFirm(BaseFirm):
 
     def _clear(self, order: Statement):
         """Offset the position by order's status"""
-        if order.status != 'accepted':
-            return self
-
         position = self.Position
+        trade = self.Trade
         qty = order.quantity
         if position['trade-position'] > 0:
             qty = -qty
 
         self.Position.update({'trade-position': position['trade-position'] + qty})
+        self.Trade.update({'traded-allowance': trade['traded-allowance'] + qty})
         return self
 
-    def clear(self, *orders):
+    def clear(self, order: Statement):
         """Firms will retrieve accepted orders to change their positions"""
         # agent is independent from market clearing because it can be executed with any frequency
-        for item in orders:
-            self._clear(item)
-
-        self._Orders['deal'] += [item.dict()]
+        self._clear(order)
+        self._Orders['deal'] += [order.dict()]
         return self
 
     def action(self, show=False):
@@ -489,6 +499,11 @@ class RegulatedFirm(BaseFirm):
             logger.info(f'Firm {self.uid}: take action at step={self.Step}')
 
         return self
+
+    def quit(self):
+        """Firms will quit the market if it emits less than a threshold or it loses money from production"""
+        # TODO: combined with revenues, firms will quit.
+        pass
 
 
 if __name__ == '__main__':

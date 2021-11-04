@@ -9,7 +9,7 @@ from core.base import init_logger
 logger = init_logger('core-stats')
 
 
-def mean(*args, digits=None):
+def mean(args, digits=None):
     """Wrapped mean method for a numeric vector"""
     return sum(args) / len(args) if digits is None else round(sum(args) / len(args), digits)
 

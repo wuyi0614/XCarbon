@@ -224,7 +224,7 @@ class Order(BaseModel):
 
         if any(success):
             # settlement price is the mean value of the two orders
-            settle_price = mean(transaction.price, self.price, digits=self.digits)
+            settle_price = mean([transaction.price, self.price], digits=self.digits)
             # settlement quantity depends on transaction direction
             if success[0]:  # buyer side (self.quantity < 0)
                 qty_diff = transaction.quantity - abs(self.quantity)
@@ -521,34 +521,37 @@ class CarbonMarket(BaseMarket):
         report = self.to_dataframe()
         # 使用pyecharts绘制可交互的K线
 
-    def _make_bars(self, freq='day', **kwargs):
-        """The market will convert accpeted orders(states) into data bars"""
-        if self.OrderBook.empty:
-            logger.warning(f'No transaction happened at Day {self.Clock.today()}')
+    def _create_bar_metrics(self, book, freq, mode='order'):
+        if mode == 'order':
+            open_ = book.price.values[0]
+            high = book.price.max()
+            low = book.price.min()
+            close = book.price.values[-1]
+            prev_close = 0 if not self.Bars else self.Bars[-1].close
+
+            volume = book.price.values * book.quantity.values
+            mean_ = volume.sum() / book.quantity.values.sum()
+            # quantity metrics
+            quantity = book.quantity.values.sum()
+            volume = volume.sum()
+
+        elif mode == 'state':
+            open_ = book['open'].values[0]
+            high = max(book['open'].max(), book['close'].max())
+            low = min(book['open'].min(), book['close'].min())
+            close = book['close'].values[-1]
+            prev_close = None
+
+            volume = book.volume.values
+            mean_ = volume.sum() / book.quantity.values.sum()
+            # quantity metrics
+            quantity = book.quantity.values.sum()
+            volume = volume.sum()
+        else:
             return None
-
-        # NB. assume when a book is passed through, the period is over
-        book = pd.DataFrame(self.OrderBook.pool.values())
-
-        # if OrderBook is empty without any accepted orders
-        if book.empty:  # all orders are waiting
-            return None
-
-        # price metrics
-        open_ = book.price.values[0]
-        prev_close = 0 if not self.Bars else self.Bars[-1].close
-        high = book.price.max()
-        low = book.price.min()
-        close = book.price.values[-1]
-
-        volume = book.price.values * book.quantity.values
-        mean_ = volume.sum() / book.quantity.values.sum()
-        # quantity metrics
-        quantity = book.quantity.values.sum()
-        volume = volume.sum()
 
         # update the transaction date
-        ts = self.Clock.today()  # DO NOT move clock inside of the market
+        ts = self.Clock._get(freq)  # DO NOT move clock inside of the market
         return Bar(open=open_,
                    mean=mean_,
                    prev_close=prev_close,
@@ -559,6 +562,33 @@ class CarbonMarket(BaseMarket):
                    quantity=quantity,
                    ts=ts,
                    frequency=freq)
+
+    def _make_bars(self, freq='day', **kwargs):
+        """The market will convert accpeted orders(states) into data bars"""
+        if self.OrderBook.empty:
+            logger.warning(f'No transaction happened at Day {self.Clock.today()}')
+            return None
+
+        # NB. assume when a book is passed through, the period is over
+        book = pd.DataFrame(self.OrderBook.pool.values())
+        # if OrderBook is empty without any accepted orders
+        if book.empty:  # all orders are waiting
+            return None
+
+        return self._create_bar_metrics(book, freq, 'order')
+
+    def aggregate(self, freq):
+        # if aggregate at montly basis, have to filter the book,
+        # because bars happen at daily basis (incl. other months)
+        book = self.to_dataframe()
+        if freq == 'month':
+            month = self.Clock._get('month')
+            book = book[book.ts.str.contains(month)]
+
+        if book.empty:
+            return
+
+        return self._create_bar_metrics(book, freq, 'state')
 
     def open(self):
         """Market create an order book and starts trading"""

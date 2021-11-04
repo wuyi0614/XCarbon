@@ -24,6 +24,10 @@ from sklearn.utils import shuffle
 
 # generalised environmental variables
 DATE_FORMATTER = '%Y-%m-%d %H:%M:%S'
+DATE_ELEMENTS = {'year': 'years', 'month': 'months', 'day': 'days',
+                 'hour': 'hours', 'minute': 'minutes', 'second': 'seconds'}
+DATE_FORMATS = {'year': '%Y', 'month': '%Y-%m', 'day': '%Y-%m-%d', 'hour': '%Y-%m-%d %H',
+                'minute': '%Y-%m-%d %H:%M', 'second': '%Y-%m-%d %H:%M:%S'}
 DEFAULT_LOGGING_DIR = Path('logs')
 DEFAULT_LOGGING_DIR.mkdir(exist_ok=True, parents=True)
 
@@ -168,11 +172,18 @@ class Clock:
         return abs(days)
 
     def days_left(self):
-        last_day = datetime(self.Year, self.Month + 1, 1) - timedelta(days=1)
+        if self.Month == 12:
+            last_day = datetime(self.Year, self.Month, 31)
+        else:
+            last_day = datetime(self.Year, self.Month + 1, 1) - timedelta(days=1)
+
         return self._days_between(self.Date, last_day)
 
+    def _get(self, frequency):
+        return self.Date.strftime(DATE_FORMATS[frequency])
+
     def today(self):
-        return self.Date.strftime('%Y-%m-%d')
+        return self._get('day')
 
     def is_workday(self):
         return self._workday(self.Date)
@@ -180,6 +191,9 @@ class Clock:
     def is_monthend(self):
         days = self.days_left()
         return True if days == 0 else False
+
+    def is_yearend(self):
+        return self.Month == 12 and self.Day == 31
 
     def workdays_left(self):
         last_day = datetime(self.Year, self.Month + 1, 1) - timedelta(days=1)
@@ -208,17 +222,13 @@ def alter_date(tar, frequency, steps, compress=False, fmt=None):
     else:
         date = tar
 
-    keys = {'year': 'years', 'month': 'months', 'day': 'days',
-            'hour': 'hours', 'minute': 'minutes', 'second': 'seconds'}
-    fmts = {'year': '%Y', 'month': '%Y-%m', 'day': '%Y-%m-%d', 'hour': '%Y-%m-%d %H',
-            'minute': '%Y-%m-%d %H:%M', 'second': '%Y-%m-%d %H:%M:%S'}
     if steps > 0:
-        new = date + timedelta(**{keys[frequency]: steps})
+        new = date + timedelta(**{DATE_ELEMENTS[frequency]: steps})
     else:
-        new = date - timedelta(**{keys[frequency]: -steps})
+        new = date - timedelta(**{DATE_ELEMENTS[frequency]: -steps})
 
     if compress:
-        fmt = fmts[frequency]
+        fmt = DATE_FORMATS[frequency]
 
     return new.strftime(fmt)
 
@@ -233,7 +243,6 @@ def get_current_timestamp(fmt: str = "%Y-%m-%d"):
 
 
 def date_generator(start, end=None, periods=None, frequency=None, fmt=None, closed=None) -> list:
-
     """
     Wrapped pd.data_range() method for date generation.
 
@@ -269,14 +278,13 @@ def date_generator(start, end=None, periods=None, frequency=None, fmt=None, clos
 
 
 # logging
-def init_logger(name, out_dir=None):
+def init_logger(name, out_dir=None, level='INFO'):
     if out_dir is None:
         out_dir = DEFAULT_LOGGING_DIR
 
     out_name = out_dir / name
-    logger.add(out_name.with_suffix(".log"), format="{time} {level} {message}", level="INFO")
+    logger.add(out_name.with_suffix(".log"), format="{time} {level} {message}", level=level)
     return logger
-
 
 
 if __name__ == "__main__":
