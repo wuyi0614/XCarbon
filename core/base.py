@@ -1,6 +1,6 @@
 # Base methods and instances for the modeling
 #
-# ver. 2020-10-20
+# Created at 2020-10-20
 #
 
 import time
@@ -196,7 +196,10 @@ class Clock:
         return self.Month == 12 and self.Day == 31
 
     def workdays_left(self):
-        last_day = datetime(self.Year, self.Month + 1, 1) - timedelta(days=1)
+        if self.Month == 12:
+            last_day = datetime(self.Year, self.Month, 31)
+        else:
+            last_day = datetime(self.Year, self.Month + 1, 1) - timedelta(days=1)
         return self._workdays_between(self.Date, last_day)
 
 

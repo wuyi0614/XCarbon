@@ -45,6 +45,9 @@ class Scheduler:
         # equip with market
         self.Market = market
 
+        # data monitoring
+        self.Data = {'abate': 0, 'output': 0, 'emission': 0, 'allocation': 0}
+
         # status monitoring
         self.Clock = clock
         self.is_stop = True
@@ -106,11 +109,11 @@ class Scheduler:
             for _, agent in pool.items():
                 if not cm.to_dataframe().empty:
                     df = cm.to_dataframe()
-                    high, mean_, low = df['high'].values[-1], df['mean'].values[-1], df['low'].values[-1]
+                    mean_ = df['mean'].values[-1]
                 else:
-                    high, mean_, low = None, None, None
+                    mean_ = None
 
-                item = agent.trade(prob, high, mean_, low)
+                item = agent.trade(prob, mean_)
                 if item:
                     ob.put(item)
 
@@ -140,13 +143,13 @@ class Scheduler:
             self.Clock.move(1)
             return self
 
+        self.Clock.move(1)
         for _, agent in self.Pool.items():
             carbon = agent.CarbonPrice
             agent.CarbonPrice.update({'carbon-price': carbon['carbon-price'] + [month_bar.mean]})
             agent._action_trade_decision()
             agent.Step += 1
 
-        self.Clock.move(1)
         logger.info(f'The trading month is ended at {self.Clock.today()}')
         return self
 
@@ -170,6 +173,8 @@ class Scheduler:
             abate_cost += [agent.Abatement['abate-cost']]
             emission += [agent.Emission['emission-all']]
 
+        self.Data.update({'abate': mean(abate, 3), 'output': mean(current_output, 3),
+                          'emission': mean(emission, 3), 'allocation': mean(allocation, 3)})
         # TODO: update product price (if there are more industries, categorize them by `Tag`)
         # product price is negatively correlated with output
         factors = self.Factors
@@ -246,11 +251,11 @@ if __name__ == '__main__':
     from core.firm import RegulatedFirm, randomize_firm_specs
     from core.market import CarbonMarket, OrderBook
     from core.base import Clock
-    from core.plot import plot_kline
+    from core.plot import plot_kline, plot_volume, plot_grid
 
     # Test: daily clear
     # create objs
-    ck = Clock('2021-01-01')
+    ck = Clock('2021-07-01')
     ob = OrderBook('day')
     cm = CarbonMarket(ob, ck, 'day')
 
@@ -261,7 +266,7 @@ if __name__ == '__main__':
     # create agents
     conf = read_config('config/power-firm-20211027.json')
     for i in range(10):
-        conf_ = randomize_firm_specs(conf, True)
+        conf_ = randomize_firm_specs(conf, 'seller')
         reg = RegulatedFirm(ck, **conf_)
         sch.take(reg)
 
@@ -274,20 +279,33 @@ if __name__ == '__main__':
     sch.daily_clear([0.3, 0.7], compress=True)
 
     # Test: the pipeline
+    ck = Clock('2021-01-01')
+    ob = OrderBook('day')
+    cm = CarbonMarket(ob, ck, 'day')
     sch_conf = read_config('config/scheduler-20211027.json')
     sch = Scheduler(cm, ck, 'day', **sch_conf)
 
-    # create agents
+    # create agents (considering both buyer/seller, compliance/non-compliance traders)
     conf = read_config('config/power-firm-20211027.json')
-    for i in range(50):
-        conf_ = randomize_firm_specs(conf, True)
-        reg = RegulatedFirm(ck, **conf_)
-        sch.take(reg)
+    for i in range(30):  # demo: 100, i<30
+        conf_ = randomize_firm_specs(conf, 'buyer')
+        buyer = RegulatedFirm(ck, Compliance=0, **conf_) if i < 10 else RegulatedFirm(ck, Compliance=1, **conf_)
+        sch.take(buyer)
 
-    sch.run(probs=[0., 0.5], compress=True)
+    for i in range(40):  # demo: 120
+        conf_ = randomize_firm_specs(conf, 'seller')
+        seller = RegulatedFirm(ck, Compliance=0, **conf_) if i < 10 else RegulatedFirm(ck, Compliance=1, **conf_)
+        sch.take(seller)
+
+    sch.run(probs=[0.2, 0.7], compress=True)  # demo: [0.2, 0.7]
 
     mark_report = cm.to_dataframe()
     array = mark_report[['open', 'close', 'low', 'high']].astype(float).values.tolist()
     dates = mark_report.ts.values.tolist()
+    # draw kline price chart
+    c1 = plot_kline(array, dates, 'carbon price', 'carbon-market-300')
 
-    plot_kline(array, dates, 'carbon price', 'carbon-market-year')
+    # draw bar volume chart
+    volumes = mark_report['volume'].astype(float).values.round(1).tolist()
+    c2 = plot_volume(volumes, dates)
+    plot_grid(c1, c2, True)

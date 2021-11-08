@@ -500,7 +500,7 @@ class BaseMarket:
 class CarbonMarket(BaseMarket):
     """A prototyped carbon market inheritted from BaseMarket"""
 
-    def __init__(self, ob: OrderBook, clock, freq='day', **spec):
+    def __init__(self, ob: object, clock: object, freq: object = 'day', **spec) -> object:
         super().__init__(ob, freq, **spec)
         self.Bars = []  # data pool
         self.OrderBook = ob  # internally linked with the order book
@@ -581,12 +581,12 @@ class CarbonMarket(BaseMarket):
         # if aggregate at montly basis, have to filter the book,
         # because bars happen at daily basis (incl. other months)
         book = self.to_dataframe()
+        if book.empty:
+            return
+
         if freq == 'month':
             month = self.Clock._get('month')
             book = book[book.ts.str.contains(month)]
-
-        if book.empty:
-            return
 
         return self._create_bar_metrics(book, freq, 'state')
 

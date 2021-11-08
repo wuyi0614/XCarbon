@@ -56,7 +56,7 @@ def get_rand_vector(size, digits=3, low=0, high=1, is_int=False):
     if is_int:
         return list(np.random.randint(low, high, size))
 
-    return [round(i * high + low, digits) for i in np.random.random(size)]
+    return [round(i * (high - low) + low, digits) for i in np.random.random(size)]
 
 
 def logistic_prob(gamma, theta, x):

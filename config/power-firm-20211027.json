@@ -70,7 +70,7 @@
     "abate-investment": 0
   },
   "Trade": {
-    "divide": 200,
+    "divide": 100,
     "_desc": "divide base to control the daily trading behavior of firms",
     "traded-allowance": [
       0

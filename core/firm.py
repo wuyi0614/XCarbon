@@ -12,8 +12,7 @@ from numba import jit  # accelerate numpy operations
 from tqdm import tqdm
 from copy import deepcopy
 
-from core.base import get_current_timestamp, generate_id, init_logger, accelerator, jsonify_without_desc, \
-                      read_config
+from core.base import generate_id, init_logger, jsonify_without_desc, read_config, Clock
 from core.stats import mean, logistic_prob, range_prob, get_rand_vector
 from core.market import Order, OrderBook, Statement
 
@@ -22,10 +21,11 @@ logger = init_logger('Firm')
 
 
 # functions for firms
-def randomize_firm_specs(specs, random_factors=False):
+def randomize_firm_specs(specs, role='random', random_factors=False):
     """Randomly create firm agents according to a template specification with proper randomization
 
     :param specs: A specification template for firms
+    :param role: assign a role to the firm and make sure it has negative (buyer) or positive (seller) position
     :param random_factors: Hardcore randomization that changes the core parameters (dangerous)
 
     The following parameters and variables will be randomized:
@@ -42,7 +42,6 @@ def randomize_firm_specs(specs, random_factors=False):
     - Trade
 
     """
-    # use While?
     # logics for firm generation, the principle is, price and output should be positively correlated
     template_spec = deepcopy(specs)
 
@@ -53,22 +52,7 @@ def randomize_firm_specs(specs, random_factors=False):
     emission = template_spec['Emission']
     emission_factors = template_spec['EmissionFactor']
     abatement = template_spec['Abatement']
-
-    # adjust output values
-    ann_out_ratio = get_rand_vector(1, low=-20, high=20, is_int=True).pop()
-    adj_ann_out = output['annual-output'] + ann_out_ratio
-    adj_mon_out = adj_ann_out / 12
-    alpha1 = factors['alpha1'] + ann_out_ratio  # keep track on annual output
-    output.update({'annual-output': adj_ann_out, 'monthly-output': adj_mon_out, 'last-output': adj_ann_out})
-    factors.update({'alpha1': alpha1})
-
-    # adjust input values
-    input_output_ratio = 15  # fixed ratio: output / input(energy + material)
-    input_all = adj_ann_out / input_output_ratio
-    input_ratio = get_rand_vector(1, low=0.3, high=0.7, digits=3, is_int=False).pop()
-    input_energy = input_all * input_ratio
-    input_material = input_all * (1 - input_ratio)
-    inp.update({'energy': input_energy, 'material': input_material})
+    carbon_price = template_spec['CarbonPrice']
 
     # adjust production function factors (dangerous!)
     if random_factors:
@@ -80,6 +64,14 @@ def randomize_firm_specs(specs, random_factors=False):
             factor_[f] = factors[f] * (1 + r)
 
         factors.update(factor_)
+
+    # adjust output values
+    ann_out_ratio = get_rand_vector(1, low=-20, high=20, is_int=True).pop()
+    adj_ann_out = output['annual-output'] + ann_out_ratio
+    adj_mon_out = adj_ann_out / 12
+    alpha1 = factors['alpha1'] + ann_out_ratio  # keep track on annual output
+    output.update({'annual-output': adj_ann_out, 'monthly-output': adj_mon_out, 'last-output': adj_ann_out})
+    factors.update({'alpha1': alpha1})
 
     # adjust input price
     energy_price, material_price = price['energy-price'], price['material-price']
@@ -93,7 +85,24 @@ def randomize_firm_specs(specs, random_factors=False):
     material_factor = emission_factors['material-factor'] * (1 + adj_material_price / 100)
     emission_factors.update({'energy-factor': energy_factor, 'material-factor': material_factor})
 
-    # adjust emissions
+    # adjust input values
+    input_output_ratio = 20  # fixed ratio: output / input(energy + material)
+    input_all = adj_ann_out / input_output_ratio
+    ue, ui = RegulatedFirm._get_inputs(price, carbon_price, factors, emission_factors, adj_ann_out)
+    input_ratio = get_rand_vector(1, low=0.3, high=0.7, digits=3, is_int=False).pop()
+    if role == 'random':
+        ratio = 1  # nothing to adjust
+    elif role == 'buyer':
+        # temporarily know how many inputs needed
+        ratio = 1 - get_rand_vector(1, low=0.15, high=0.4, digits=3, is_int=False).pop()
+    elif role == 'seller':
+        ratio = 1 + get_rand_vector(1, low=0.15, high=0.4, digits=3, is_int=False).pop()
+
+    # role-deciding part
+    input_energy = input_all * input_ratio * ratio
+    input_material = input_all * (1 - input_ratio) * ratio
+    inp.update({'energy': input_energy, 'material': input_material})
+    # adjust emissions (role-deciding)
     energy_emission = input_energy * energy_factor
     material_emission = input_material * material_factor
     emission.update({'energy-emission': energy_emission, 'material-emission': material_emission,
@@ -114,6 +123,29 @@ def randomize_firm_specs(specs, random_factors=False):
         template_spec.update({key: locals()[element]})
 
     return template_spec
+
+
+# TODO: allowance allocator for regulated firms and plz improve it in the future
+def compliance_allocator(pos: float, clock: Clock, **spec) -> dict:
+    """Allocator returns a generator which accepts Clock object and models in a form of series"""
+    compliance_month = spec.get('compliance_month', 12)
+    compliance_window = spec.get('compliance_window', 2)
+    compliance_ratio = spec.get('compliance_ratio', 0.9)
+    # how many months before the compliance
+    ex_months = compliance_month - compliance_window - clock.Month + 1
+    non_comp_month = pos * (1 - compliance_ratio) / ex_months
+    comp_month = pos * compliance_ratio / (12 - ex_months)
+    series = [non_comp_month] * ex_months + [comp_month] * (12 - ex_months)
+    return {month: series[idx] for idx, month in enumerate(range(clock.Month, 13, 1))}
+
+
+def non_compliance_allocator(pos: float, clock: Clock, **spec) -> dict:
+    """Allocator returns a non-compliance like series of trading allowances,
+    and allocator should returns allowances at a monthly basis and then it will be divided at a daily basis.
+    """
+    ex_months = 12 - clock.Month + 1
+    series = [pos / ex_months] * ex_months
+    return {month: series[idx] for idx, month in enumerate(range(clock.Month, 13, 1))}
 
 
 # classes for firms
@@ -217,7 +249,7 @@ class RegulatedFirm(BaseFirm):
         # because there is only one economic sector here in the model,
         # for the same production function, it has fixed parameters
         self.Factors = {'alpha0': 160, 'beta0': -0.2,  # params for demand function
-                        'alpha1': 1000, 'alpha2': 0.3, 'sigma': 5/4,  # params for production function
+                        'alpha1': 1000, 'alpha2': 0.3, 'sigma': 5 / 4,  # params for production function
                         'theta2': 0, 'gamma2': 0,  # params for logistic prob function
                         'decay': 1}  # annual decay rate of allocation
 
@@ -229,17 +261,18 @@ class RegulatedFirm(BaseFirm):
                           'abate-cost': 0, 'last-abate-cost': 0,
                           'abate': 0, 'last-abate': 0}  # it's a variable on a yearly basis
         # variables in `Position` can only be determined in the model
-        self.Position = {'position': 0, 'last-position': 0, 'trade-position': 0, 'last-trade-position': 0}
+        self.Position = {'position': 0, 'last-position': 0, 'trade-position': 0, 'last-trade-position': 0,
+                         'monthly-trade-position': {}, 'daily-trade-position': 0}
         self.Allocation = {'allocation': 0, 'last-allocation': 0}
 
         # trade decision
-        self.Div = spec.get('divide', 300)
         self.Trade = {'traded-allowance': [0], 'last-traded-allowance': [0],
                       'price-pressure-ratio': 0, 'quantity-pressure-ratio': 0}
 
         # agent status
         self.Status = 0  # 1=activated; 0=deactivated
         self.Clock = clock  # shared clock with the scheduler
+        self.Compliance = 0  # 1=compliance trader; 0=non-compliance trader
 
         # set up parameters
         self.set_params(**spec)
@@ -292,25 +325,12 @@ class RegulatedFirm(BaseFirm):
     def _get_expected_output(ue, ui, alpha1, alpha2, rho0):
         return alpha1 * (alpha2 * ((alpha2 * ue) ** rho0) + (1 - alpha2) * ((alpha2 * ui) ** rho0)) ** (1 / rho0)
 
-    def _action_production(self):
-        """Firms make production plan based on the minimized cost"""
-        factors = self.Factors  # make persistence of variables for quick testing
-        price = self.Price
-        carbon_price = self.CarbonPrice
-        emission_factor = self.EmissionFactor
-
-        # NB. the initial output is given by the config but when Step>1, it's decided by product price
-        if self.Step > 1:
-            output = factors['alpha0'] * price['product-price'] ** factors['beta0']
-            self.Output.update({'annual-output': output, 'monthly-output': output / 12})
-
-        pi0 = self.Output['last-output']
+    @classmethod
+    def _get_inputs(cls, price, carbon_price, factors, emission_factors, pi0: float):
         # make sure rho0/rho1/rho2 have a bigger value, rho1 and rho2 are relatively fixed values
-        rho0 = 1 - 1 / factors['sigma']  # NB. rho0 must be positive
-        rho1 = price['energy-price'] - mean(carbon_price['last-carbon-price']) * emission_factor['energy-factor']
-        rho2 = price['material-price'] - mean(carbon_price['last-carbon-price']) * emission_factor['material-factor']
-
-        # TODO: rho1/rho2 must not be zero
+        rho0 = 1 - 1 / factors['sigma']
+        rho1 = price['energy-price'] - mean(carbon_price['last-carbon-price']) * emission_factors['energy-factor']
+        rho2 = price['material-price'] - mean(carbon_price['last-carbon-price']) * emission_factors['material-factor']
         rho1 = rho1 if rho1 != 0 else 0.1
         rho2 = rho2 if rho2 != 0 else 0.1
         # if one of them is negative, sigma should change (make sure rho0 * rho1 or rho0 * rho2 is positive)
@@ -318,8 +338,25 @@ class RegulatedFirm(BaseFirm):
             rho0 = 1 - 1 / (- factors['sigma'])
 
         # compute the optimal inputs
-        ue = self._get_energy_input(pi0, rho0, rho1, rho2, factors['alpha1'], factors['alpha2'])
-        ui = self._get_material_input(pi0, rho0, rho1, rho2, factors['alpha1'], factors['alpha2'])
+        ue = cls._get_energy_input(pi0, rho0, rho1, rho2, factors['alpha1'], factors['alpha2'])
+        ui = cls._get_material_input(pi0, rho0, rho1, rho2, factors['alpha1'], factors['alpha2'])
+        return ue, ui
+
+    def _action_production(self):
+        """Firms make production plan based on the minimized cost"""
+        factors = self.Factors  # make persistence of variables for quick testing
+        price = self.Price
+        carbon_price = self.CarbonPrice
+        emission_factors = self.EmissionFactor
+        rho0 = 1 - 1 / factors['sigma']
+
+        # NB. the initial output is given by the config but when Step>1, it's decided by product price
+        if self.Step > 1:
+            output = factors['alpha0'] * price['product-price'] ** factors['beta0']
+            self.Output.update({'annual-output': output, 'monthly-output': output / 12})
+
+        pi0 = self.Output['last-output']
+        ue, ui = self._get_inputs(price, carbon_price, factors, emission_factors, pi0)
         y_ = self._get_expected_output(ue, ui, factors['alpha1'], factors['alpha2'], rho0)  # for purpose of display
         self._record(expected_output=y_)
 
@@ -372,11 +409,19 @@ class RegulatedFirm(BaseFirm):
         # update position with abatement
         trade_position = position['position'] - abate_opt
         self.Position.update({'last-trade-position': position['trade-position']})
-        self.Position.update({'trade-position': trade_position,
-                              'daily-trade-position': trade_position / self.Div})
+        self.Position.update({'trade-position': trade_position})
+        self._position_adjuster(trade_position)
+
+    def _position_adjuster(self, pos):
+        # compliance or non-compliance trader
+        if self.Compliance:
+            self.Position.update({'monthly-trade-position': compliance_allocator(pos, self.Clock)})
+        else:
+            self.Position.update({'monthly-trade-position': non_compliance_allocator(pos, self.Clock)})
+        return self
 
     def _action_trade_decision(self):
-        """Trade decision happens on a specific frequency basis (usually the daily basis)"""
+        """Trade decision happens on a specific frequency basis (usually the monthly basis)"""
         # TODO: 大企业比如华能集团（拥有很多的电厂和配额）的交易行为会因为持有配额数量多而发生改变
         # here you adjust the position of a firm
         carbon = self.CarbonPrice
@@ -386,14 +431,35 @@ class RegulatedFirm(BaseFirm):
 
         # compute the expected carbon price according its holdings
         current_carbon_price = carbon['carbon-price'][-1]
+        month_position = position['monthly-trade-position'].get(self.Clock.Month, position['trade-position'])
+
         # use `-` to reverse the curve of `trade-position` because more postive holdings will lower the price
-        # TODO: the pricing function determines that buyer's price will not exceed seller's
-        exp_carbon_price = current_carbon_price * logistic_prob(theta=factors['thetai'],
-                                                                gamma=factors['gammai'],
-                                                                x=-position['trade-position'])
+        # TODO: the pricing function determines that buyer's price will not exceed seller's, and notably
+        # change `gammai` will reverse the trend if the gammi becomes negative.
+        gammai = factors['gammai'] - self.Clock.Month / 9  # a bodge but it must be 9 (12 - 3, compliance period)
+        if gammai == 0:
+            gammai = gammai - 0.01
+
+        # TODO: sellers are not expecting carbon prices falling, but they do hope it could grow
+        # The true logic is, when they hold more, they trade more aggressively
+        prob = range_prob(month_position / 100, 0.6)
+        upper_prob = prob + 1
+        lower_prob = 1 - prob
+        # upper_prob = logistic_prob(theta=factors['thetai'], gamma=gammai, x=-position['trade-position'])
+        # lower_prob = logistic_prob(theta=factors['thetai'], gamma=factors['gammai'], x=-position['trade-position'])
+        if lower_prob <= upper_prob:
+            prob = get_rand_vector(1, low=lower_prob, high=upper_prob).pop()  # price +- |eps|
+        else:
+            prob = get_rand_vector(1, low=upper_prob, high=lower_prob).pop()
+
+        exp_carbon_price = current_carbon_price * prob
         self.CarbonPrice.update({'expected-carbon-price': carbon['expected-carbon-price'] + [exp_carbon_price]})
+        self.Position.update({'daily-trade-position': month_position / self.Clock.workdays_left()})
 
         trade_position = position['trade-position']
+        # must update monthly-trade-position otherwise the position will not be dynamically updated after trading.
+        self._position_adjuster(trade_position)
+
         # test if it's under pressure either from price or quantity
         if self.Step > 3:  # only when the trading periods go over 4 steps
             if trade_position < 0:
@@ -416,37 +482,38 @@ class RegulatedFirm(BaseFirm):
             else:
                 position_ = max([trade_position, price_drive_position, qty_drive_position])
             # update the trade position
-            self.Position.update({'trade-position': position_})
+            self._position_adjuster(position_)
+            month_position = self.Position['monthly-trade-position'].get(self.Clock.Month, position_)
+            self.Position.update({'trade-position': position_,
+                                  'daily-trade-position': month_position / self.Clock.workdays_left()})
 
     def _action_revenue(self):
         """Firms accounts their revenue at the end of the year and affect the next-year's plan (production)"""
         # NB. remember to collect the revenue/cost from carbon trading
         pass
 
-    def _trade(self, high, mean_, low):
-        """Firm decides a transaction according to its trading needs"""
+    def _trade(self, current: float):
+        """Firm decides a transaction according to its trading needs, and firms react to changes in current price"""
         carbon = self.CarbonPrice
         position = self.Position
+        factors = self.Factors
 
         if round(position['trade-position'], 5) == 0:
             return
 
-        # TODO: use high nad low price to adjust firm's strategy
-        # if prices are higher than its expected price for 3 days, it will randomly choose a price between mean and high
-        # if prices are lower than its expected price for 3 days, it will randomly choose a price between mean and low
-        # past_days = self.Clock._workdays_between(self.Clock._Raw, self.Clock.Date)
-        # if past_days > 3 and all([high, mean_, low]):
-        #     if position['trade-position'] < 0:  # buyer
-        #         exp_carbon_price = get_rand_vector(1, low=0, high=1).pop() * (high - mean_) + mean_
-        #     else:
-        #         exp_carbon_price = get_rand_vector(1, low=0, high=1).pop() * (mean_ - low) + low
-        # else:
-        #     exp_carbon_price = carbon['expected-carbon-price'][-1]
-        exp_carbon_price = carbon['expected-carbon-price'][-1]
+        # TODO: use current price to adjust firm's strategy
+        exp_carbon_price = carbon['expected-carbon-price'][-1]  # it changes only once a month
+        if not current:
+            current = exp_carbon_price
 
+        # allow a daily pricing fluctuation from firms' side
+        eps = logistic_prob(theta=factors['thetai'], gamma=factors['gammai'], x=exp_carbon_price - current)
+        eps = abs(1 - eps) if abs(1 - eps) <= 0.1 else 0.1
+        prob = 1 + get_rand_vector(1, low=-eps, high=eps).pop()  # price +- |eps|
         # TODO: apply a better strategy to update firm's expected carbon price
+
         # agent trades on a daily basis so it should be divided into even shares
-        order = Order(price=exp_carbon_price,
+        order = Order(price=exp_carbon_price * prob,
                       mode='sell' if position['trade-position'] > 0 else 'buy',
                       quantity=position['daily-trade-position'],
                       offerer_id=self.uid)
@@ -454,16 +521,14 @@ class RegulatedFirm(BaseFirm):
         self._Orders['order'] += [order.dict()]  # only for cache
         return order
 
-    def trade(self, prob=1, high=None, mean_=None, low=None):
+    def trade(self, prob: float, current: float):
         """Firms trade once a day and they make bid/ask according to their position without reverse operations
 
         :param prob: the probability here indicates a specific prob that a firm would trade or not
         """
-        # 每个企业会发出bid / ask 来，然后放进pool里，等待成交
-        # 这个过程可以先是非异步的（异步的话，会面临一个object没法被pickle的问题，可能要先把order压缩为字符，然后destring
-        # if `Order` object cannot be accept by the pipeline, stringtify it and after processing, destring it
+        # firms obtain a random digit to decide if they trade or not
         prob_ = range_prob(self.Position['trade-position'])
-        return self._trade(high, mean_, low) if prob_ >= prob else None
+        return self._trade(current) if prob_ >= prob else None
 
     def _clear(self, order: Statement):
         """Offset the position by order's status"""
@@ -508,6 +573,7 @@ class RegulatedFirm(BaseFirm):
 
 if __name__ == '__main__':
     from core.base import Clock
+
     clock = Clock('2021-01-01')
 
     # Temporary test zone for all the classes and functions
@@ -543,9 +609,9 @@ if __name__ == '__main__':
         conf_ = randomize_firm_specs(conf)
         reg = RegulatedFirm(clock, **conf_)
         reg.activate()
-        order = reg.trade(0)
+        order = reg.trade(0, 0)
         orders[reg.uid] = order
         ob.put(order)
+        print(f'{order.mode}: {order.price}')
 
     # Test: run models on daily basis
-
