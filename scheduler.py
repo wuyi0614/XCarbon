@@ -39,8 +39,8 @@ class Scheduler:
         self.PSize = 1 if not psize else psize  # a future control param for async operation
 
         # adjustment factors (opt params are given)
-        self.Factors = {'theta1': kwargs.get('theta1', 1.5), 'gamma1': kwargs.get('gamma1', 0.2),
-                        'theta3': kwargs.get('theta3', 2), 'gamma3': kwargs.get('gamma3', 0.2)}
+        self.Factors = {'theta2': kwargs.get('theta2', 1.5), 'gamma2': kwargs.get('gamma2', 0.2),
+                        'theta1': kwargs.get('theta1', 2), 'gamma1': kwargs.get('gamma1', 0.2)}
 
         # equip with market
         self.Market = market
@@ -155,9 +155,6 @@ class Scheduler:
 
     def yearly_clear(self):
         """Clear status of agents once a year"""
-        if not self.Clock.is_yearend():
-            return self
-
         # adjust product price by comparing aggregate output of last year and this year
         last_output, current_output, price = [], [], []
         # adjust abatement cost by calculating the overall abatement volume
@@ -173,18 +170,18 @@ class Scheduler:
             abate_cost += [agent.Abatement['abate-cost']]
             emission += [agent.Emission['emission-all']]
 
-        self.Data.update({'abate': mean(abate, 3), 'output': mean(current_output, 3),
-                          'emission': mean(emission, 3), 'allocation': mean(allocation, 3)})
+        self.Data.update({'abate': sum(abate), 'output': sum(current_output),
+                          'emission': sum(emission), 'allocation': sum(allocation)})
         # TODO: update product price (if there are more industries, categorize them by `Tag`)
         # product price is negatively correlated with output
         factors = self.Factors
-        updated_price = mean(price) * logistic_prob(theta=factors['theta3'],
-                                                     gamma=factors['gamma3'],
-                                                     x=sum(current_output) - sum(last_output))
+        updated_price = mean(price) * logistic_prob(theta=factors['theta1'],
+                                                    gamma=factors['gamma1'],
+                                                    x=sum(current_output) - sum(last_output))
         # abatement cost (more abate, higher cost)
         # TODO: if it proceeds at element level, it enables to adjust one firm's abate cost
         gap = sum(allocation) - sum(emission) - sum(abate)
-        updated_cost = [cost * logistic_prob(theta=factors['theta1'], gamma=factors['gamma1'], x=gap) for
+        updated_cost = [cost * logistic_prob(theta=factors['theta2'], gamma=factors['gamma2'], x=gap) for
                         cost in abate_cost]
         # update agent's status
         for idx, (_, agent) in enumerate(self.Pool.items()):
@@ -206,7 +203,6 @@ class Scheduler:
             agent.Revenue.update({'carbon-revenue': revenue, 'last-carbon-revenue': rev})
             # TODO: fine / production revenues
 
-        self.Clock.move(1)
         logger.info(f'The trading year is ended at {self.Clock.today()}')
         return self
 
@@ -287,17 +283,17 @@ if __name__ == '__main__':
 
     # create agents (considering both buyer/seller, compliance/non-compliance traders)
     conf = read_config('config/power-firm-20211027.json')
-    for i in range(30):  # demo: 100, i<30
+    for i in range(100):  # demo: 100, i<30
         conf_ = randomize_firm_specs(conf, 'buyer')
-        buyer = RegulatedFirm(ck, Compliance=0, **conf_) if i < 10 else RegulatedFirm(ck, Compliance=1, **conf_)
+        buyer = RegulatedFirm(ck, Compliance=0, **conf_) if i < 30 else RegulatedFirm(ck, Compliance=1, **conf_)
         sch.take(buyer)
 
-    for i in range(40):  # demo: 120
+    for i in range(120):  # demo: 120
         conf_ = randomize_firm_specs(conf, 'seller')
-        seller = RegulatedFirm(ck, Compliance=0, **conf_) if i < 10 else RegulatedFirm(ck, Compliance=1, **conf_)
+        seller = RegulatedFirm(ck, Compliance=0, **conf_) if i < 40 else RegulatedFirm(ck, Compliance=1, **conf_)
         sch.take(seller)
 
-    sch.run(probs=[0.2, 0.7], compress=True)  # demo: [0.2, 0.7]
+    sch.run(probs=[0., 1], compress=True)  # demo: [0.2, 0.7]
 
     mark_report = cm.to_dataframe()
     array = mark_report[['open', 'close', 'low', 'high']].astype(float).values.tolist()
@@ -308,4 +304,4 @@ if __name__ == '__main__':
     # draw bar volume chart
     volumes = mark_report['volume'].astype(float).values.round(1).tolist()
     c2 = plot_volume(volumes, dates)
-    plot_grid(c1, c2, True)
+    plot_grid(c1, c2, 'carbon-market-high', True)
