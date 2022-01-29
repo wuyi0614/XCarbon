@@ -57,7 +57,12 @@ class Scheduler:
         self.Pool.get(uid)
 
     def _take(self, agent: BaseFirm):
-        self.Pool[agent.uid] = agent
+        emission = agent.Emission
+        if emission['emission-all'] >= self.Market.Threshold:
+            self.Pool[agent.uid] = agent
+        else:
+            logger.warning(f'Firm {agent.id} emits less than threshold: {self.Market.Threshold}')
+
         if self.show:
             logger.info(f'Take firm [{agent.uid}] into the Pool')
 
@@ -107,8 +112,8 @@ class Scheduler:
             # order book should be cleared every end of day
             pool = self.Pool
             for _, agent in pool.items():
-                if not cm.to_dataframe().empty:
-                    df = cm.to_dataframe()
+                if not market.to_dataframe().empty:
+                    df = market.to_dataframe()
                     mean_ = df['mean'].values[-1]
                 else:
                     mean_ = None
@@ -227,7 +232,7 @@ class Scheduler:
         probs = kwargs.get('probs', [0, 1])
         compress = kwargs.get('compress', False)
 
-        while not self.Clock.is_yearend():
+        while not self.Clock.is_end():
             self.daily_clear(prob_range=probs, compress=compress)
             if self.Clock.is_monthend() and not self.Clock.is_yearend():
                 self.monthly_clear()
@@ -283,14 +288,14 @@ if __name__ == '__main__':
 
     # create agents (considering both buyer/seller, compliance/non-compliance traders)
     conf = read_config('config/power-firm-20211027.json')
-    for i in range(100):  # demo: 100, i<30
+    for i in range(30):  # demo: 100, i<30
         conf_ = randomize_firm_specs(conf, 'buyer')
-        buyer = RegulatedFirm(ck, Compliance=0, **conf_) if i < 30 else RegulatedFirm(ck, Compliance=1, **conf_)
+        buyer = RegulatedFirm(ck, Compliance=0, **conf_) if i < 20 else RegulatedFirm(ck, Compliance=1, **conf_)
         sch.take(buyer)
 
-    for i in range(120):  # demo: 120
+    for i in range(40):  # demo: 120
         conf_ = randomize_firm_specs(conf, 'seller')
-        seller = RegulatedFirm(ck, Compliance=0, **conf_) if i < 40 else RegulatedFirm(ck, Compliance=1, **conf_)
+        seller = RegulatedFirm(ck, Compliance=0, **conf_) if i < 20 else RegulatedFirm(ck, Compliance=1, **conf_)
         sch.take(seller)
 
     sch.run(probs=[0., 1], compress=True)  # demo: [0.2, 0.7]

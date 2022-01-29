@@ -8,24 +8,25 @@ Specify firm-like agents given theories from economics
 """
 
 import numpy as np
-from numba import jit  # accelerate numpy operations
 from tqdm import tqdm
 from copy import deepcopy
 
 from core.base import generate_id, init_logger, jsonify_without_desc, read_config, Clock
 from core.stats import mean, logistic_prob, range_prob, get_rand_vector
 from core.market import Order, OrderBook, Statement
+from core.config import get_energy_input_proportion, FOSSIL_ENERGY_TYPES, ENERGY_BASELINE_FACTORS
 
 # env vars
 logger = init_logger('Firm')
 
 
 # functions for firms
-def randomize_firm_specs(specs, role='random', random_factors=False):
+def randomize_firm_specs(specs, role='random', inflation=0.1, random_factors=False):
     """Randomly create firm agents according to a template specification with proper randomization
 
     :param specs: A specification template for firms
     :param role: assign a role to the firm and make sure it has negative (buyer) or positive (seller) position
+    :param inflation: firm-level factors will change in the range of [-inflation, inflation] by percents
     :param random_factors: Hardcore randomization that changes the core parameters (dangerous)
 
     The following parameters and variables will be randomized:
@@ -45,6 +46,7 @@ def randomize_firm_specs(specs, role='random', random_factors=False):
     # logics for firm generation, the principle is, price and output should be positively correlated
     template_spec = deepcopy(specs)
 
+    tag = template_spec['Tag']
     price = template_spec['Price']
     inp = template_spec['Input']
     output = template_spec['Output']
@@ -56,11 +58,11 @@ def randomize_firm_specs(specs, role='random', random_factors=False):
 
     # adjust production function factors (dangerous!)
     if random_factors:
-        foo = ['alpha0', 'beta0', 'thetai', 'gammai', 'alpha2', 'theta2', 'gamma2']
+        foo = ['alpha0', 'beta0', 'thetai', 'gammai', 'alpha2', 'theta3', 'gamma3']
         factor_ = {}
         for f in foo:
-            # TODO: the fluctuation seems arbitrary here.
-            r = get_rand_vector(1, low=-0.1, high=0.1, digits=3).pop()
+            # TODO: the fluctuation seems arbitrary here. And more inflation rates are specified below
+            r = get_rand_vector(1, low=-inflation, high=inflation, digits=3).pop()
             factor_[f] = factors[f] * (1 + r)
 
         factors.update(factor_)
@@ -74,16 +76,14 @@ def randomize_firm_specs(specs, role='random', random_factors=False):
     factors.update({'alpha1': alpha1})
 
     # adjust input price
-    energy_price, material_price = price['energy-price'], price['material-price']
+    material_price = price['material-price']
     adj_energy_price = get_rand_vector(1, low=-10, high=10, is_int=True).pop()
     adj_material_price = get_rand_vector(1, low=-10, high=10, is_int=True).pop()
-    energy_price += adj_energy_price
     material_price += adj_material_price
-    price.update({'energy-price': energy_price, 'material-price': material_price})
+    price.update({'material-price': material_price})
     # adjust emission factors: change in the same direction
-    energy_factor = emission_factors['energy-factor'] * (1 + adj_energy_price / 100)
     material_factor = emission_factors['material-factor'] * (1 + adj_material_price / 100)
-    emission_factors.update({'energy-factor': energy_factor, 'material-factor': material_factor})
+    emission_factors.update({'material-factor': material_factor})
 
     # adjust input values
     input_output_ratio = 20  # fixed ratio: output / input(energy + material)
@@ -99,11 +99,15 @@ def randomize_firm_specs(specs, role='random', random_factors=False):
         ratio = 1 + get_rand_vector(1, low=0.15, high=0.4, digits=3, is_int=False).pop()
 
     # role-deciding part
-    input_energy = input_all * input_ratio * ratio
+    prop = get_energy_input_proportion(tag)
+    energy_prop = {k: v * ue for k, v in prop.items()}
     input_material = input_all * (1 - input_ratio) * ratio
-    inp.update({'energy': input_energy, 'material': input_material})
+
+    energy_prop.update({'energy': ue, 'material': input_material})
+    inp.update(energy_prop)
+
     # adjust emissions (role-deciding)
-    energy_emission = input_energy * energy_factor
+    energy_emission = sum([energy_prop[k] * ENERGY_BASELINE_FACTORS[k] for k in FOSSIL_ENERGY_TYPES])
     material_emission = input_material * material_factor
     emission.update({'energy-emission': energy_emission, 'material-emission': material_emission,
                      'emission-all': energy_emission + material_emission})
@@ -235,6 +239,8 @@ class RegulatedFirm(BaseFirm):
         # additional attributes for regulated firms (attributes should be unique and not crossed
         # NB. the unit should be unified into (Thousand RMB Yuan), e.g. 100,000 (000) output
         self.Input = {'energy': 0, 'material': 0}
+        self.Input.update({energy: 0 for energy in FOSSIL_ENERGY_TYPES})
+
         self.Output = {'annual-output': 0, 'monthly-output': 0, 'last-output': 0}
         # product-price is determined outside of firms
         self.Price = {
@@ -250,7 +256,7 @@ class RegulatedFirm(BaseFirm):
         # for the same production function, it has fixed parameters
         self.Factors = {'alpha0': 160, 'beta0': -0.2,  # params for demand function
                         'alpha1': 1000, 'alpha2': 0.3, 'sigma': 5 / 4,  # params for production function
-                        'theta2': 0, 'gamma2': 0,  # params for logistic prob function
+                        'theta3': 0, 'gamma3': 0,  # params for logistic prob function
                         'decay': 1}  # annual decay rate of allocation
 
         # emission-related variables
@@ -327,8 +333,10 @@ class RegulatedFirm(BaseFirm):
 
     @classmethod
     def _get_inputs(cls, price, carbon_price, factors, emission_factors, pi0: float):
+        # TODO: energy inputs should be reconsidered
         # make sure rho0/rho1/rho2 have a bigger value, rho1 and rho2 are relatively fixed values
         rho0 = 1 - 1 / factors['sigma']
+        # TODO: ...
         rho1 = price['energy-price'] - mean(carbon_price['last-carbon-price']) * emission_factors['energy-factor']
         rho2 = price['material-price'] - mean(carbon_price['last-carbon-price']) * emission_factors['material-factor']
         rho1 = rho1 if rho1 != 0 else 0.1
@@ -357,11 +365,17 @@ class RegulatedFirm(BaseFirm):
 
         pi0 = self.Output['last-output']
         ue, ui = self._get_inputs(price, carbon_price, factors, emission_factors, pi0)
+
+        # updated at 2021-12-08, energy use will be distributed by energy input structure
+        prop = get_energy_input_proportion(self.Tag)
+        energy_prop = {k: v * ue for k, v in prop.items()}
+        energy_prop.update({'energy': ue, 'material': ui})
+
         y_ = self._get_expected_output(ue, ui, factors['alpha1'], factors['alpha2'], rho0)  # for purpose of display
         self._record(expected_output=y_)
 
         # update input and output
-        self.Input.update({'energy': ue, 'material': ui})
+        self.Input.update(energy_prop)
         self.Output.update({'last-output': pi0})
         self.Output.update({'annual-output': pi0})
 
@@ -372,7 +386,8 @@ class RegulatedFirm(BaseFirm):
         factors = self.EmissionFactor
         emission = self.Emission
 
-        energy_emission = inputs['energy'] * factors['energy-factor']
+        # updated at 2021-12-08, do not use `energy-factor` for emission accounting of energy inputs
+        energy_emission = sum([inputs[k] * ENERGY_BASELINE_FACTORS[k] for k in FOSSIL_ENERGY_TYPES])
         material_emission = inputs['material'] * factors['material-factor']
         # update historic emissions
         self.Emission.update({'last-emission-all': emission['emission-all']})
@@ -394,7 +409,10 @@ class RegulatedFirm(BaseFirm):
 
         mean_carbon_price = mean(carbon['last-carbon-price'])
         # compute the actual abatement volume and abatement investment
-        abate_opt = (mean_carbon_price * position['position']) / (abate['abate-cost'] - mean_carbon_price)
+        # TODO: need to fix the abatement determination function
+        # 这里不同的减排技术主要两种，一种是减少能耗；一种是直接捕捉CO2，如CCS
+        # 如果企业一开始就有技术目录，他们按照成本来决定选择哪一种技术，会选择成本高的技术的企业被称为"leading firms"
+        abate_opt = (mean_carbon_price * position['trade-position']) / (abate['abate-cost'] - mean_carbon_price)
         self._record(abate=abate_opt)
 
         # only when `ac < mean(pc)`, it's cheaper for firms to invest in abatement technology
@@ -472,8 +490,8 @@ class RegulatedFirm(BaseFirm):
             if trade_position < 0:
                 qty_gap = -trade_position - sum(trade['traded-allowance'])
                 if qty_gap > 0:
-                    qty_pressure_ratio = logistic_prob(theta=factors['theta2'],
-                                                       gamma=factors['gamma2'],
+                    qty_pressure_ratio = logistic_prob(theta=factors['theta3'],
+                                                       gamma=factors['gamma3'],
                                                        x=position['trade-position'])
                     qty_drive_position = qty_drive_position * qty_pressure_ratio
 

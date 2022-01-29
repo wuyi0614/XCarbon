@@ -1,0 +1,11 @@
+# To be compatible with streamlit cloud, the file must contain every external dependencies.
+#
+
+# data processing
+pandas>=1.4.0
+dateparser>=1.1.0
+scikit-learn>=1.0.2
+pydantic>=1.9.0  # create standardized data item
+
+# dependency management
+pipreqs>=0.4.11

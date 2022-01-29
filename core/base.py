@@ -104,11 +104,11 @@ def accelerator(func, iterable, pool_size, tag=None, runtime=False):
 class Clock:
     """A clock object that allows to rollback, forward, get timestamp, and etc."""
 
-    def __init__(self, date_string=None, **kwargs):
+    def __init__(self, start_date=None, end_date=None, **kwargs):
         # DO NOT change the elements here
         elements = ['year', 'month', 'day', 'hour', 'minute', 'second']
-        if date_string:
-            date = parse_date(date_string)
+        if start_date:
+            date = parse_date(start_date)
         else:
             now = datetime.now()
             default = {k: kwargs.get(k, now.__getattribute__(k)) for k in elements}
@@ -120,6 +120,11 @@ class Clock:
         self.Format = DATE_FORMATTER
         self.Frequency = kwargs.get('frequency', 'day')
         self._calibrate()  # update elements
+
+        if end_date:
+            self.EndDate = parse_date(end_date)
+        else:
+            self.EndDate = datetime(self.Year, 12, 31)
 
     def __repr__(self):
         return self.Date.strftime(DATE_FORMATTER)
@@ -187,6 +192,9 @@ class Clock:
 
     def is_workday(self):
         return self._workday(self.Date)
+
+    def is_end(self):
+        return self._days_between(self.Date, self.EndDate) == 0
 
     def is_monthend(self):
         days = self.days_left()
@@ -282,6 +290,8 @@ def date_generator(start, end=None, periods=None, frequency=None, fmt=None, clos
 
 # logging
 def init_logger(name, out_dir=None, level='INFO'):
+    logger.remove()  # remove the initial handler
+
     if out_dir is None:
         out_dir = DEFAULT_LOGGING_DIR
 

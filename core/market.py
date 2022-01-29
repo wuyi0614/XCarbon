@@ -10,6 +10,7 @@ from collections import OrderedDict
 
 from core.base import md5string, logger, get_current_timestamp, date_generator, alter_date, DATE_FORMATTER
 from core.stats import mean, get_rand_vector, sampling
+from core.config import DEFAULT_MARKET_CAP, DEFAULT_MARKET_THRESHOLD, DEFAULT_MARKET_DECAY
 
 
 # MARKET ELEMENTS
@@ -507,6 +508,11 @@ class CarbonMarket(BaseMarket):
         self.Frequency = freq
         self.Clock = clock  # a shared clock with scheduler
 
+        # general attributes
+        self.Cap = spec.get('cap', DEFAULT_MARKET_CAP)
+        self.Decay = spec.get('decay', DEFAULT_MARKET_DECAY)
+        self.Threshold = spec.get('threshold', DEFAULT_MARKET_THRESHOLD)  # based on 26,000t coals
+
     def __repr__(self):
         """Display the present status of the market"""
         return f"""Carbon Market runs on a {self.Frequency} basis and the current market:
@@ -607,6 +613,11 @@ class CarbonMarket(BaseMarket):
 
 
 # FUNCTIONS
+def market_report(market:CarbonMarket):
+    pass
+
+
+
 def bundle_bar_data(last_bar: Bar, iter_orders: pd.DataFrame, frequency) -> Bar:
     """
     Convert a set of ticks into a bundled Bar data within a upper date boundary
