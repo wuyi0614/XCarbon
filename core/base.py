@@ -2,7 +2,7 @@
 #
 # Created at 2020-10-20
 #
-
+import copy
 import time
 import json
 import pandas as pd
@@ -33,13 +33,23 @@ DEFAULT_LOGGING_DIR.mkdir(exist_ok=True, parents=True)
 
 
 # scaffold for functional operations
+def snapshot(obj: object):
+    basis = {}
+    for attr in dir(obj):
+        if not attr.islower():
+            basis[attr] = obj.__getattribute__(attr)
+
+    return basis
+
+
 def shuffler(pool: dict):
     """A special shuffler for agent pool"""
     items = [v for v in pool.values()]
     return {each.uid: each for each in shuffle(items)}
 
 
-def jsonify_without_desc(item: dict):
+def jsonify_config_without_desc(item: dict):
+    """Skip attributes or configuration with `suffix=_desc`"""
     it = deepcopy(item)
     for k, v in item.items():
         if k.startswith('_desc'):
@@ -54,6 +64,7 @@ def jsonify_without_desc(item: dict):
 
 
 def read_config(file=None):
+    """Generalized config reader function"""
     if not file:
         return {}
 
@@ -77,13 +88,14 @@ def generate_id(string=None):
 
 
 # multi-processing
-def accelerator(func, iterable, pool_size, tag=None, runtime=False):
+def accelerator(func, iterable, pool_size, desc=None, runtime=False):
     """
     Accelerate the process of func using the multi-processing method, if pool_size is 1, execute `for-loop`.
 
     :param func: the target function
     :param iterable: iterable object, such as list, numpy.ndarray, ...
     :param pool_size: the size of multi-process pool
+    :param desc: description for the acceleration
     :param runtime: show the runtime of processing
     """
     t0 = timer()
@@ -92,7 +104,7 @@ def accelerator(func, iterable, pool_size, tag=None, runtime=False):
             result = pool.map(func, iterable)
 
     else:
-        result = [func(each) for each in tqdm(iterable, desc=tag)]
+        result = [func(each) for each in tqdm(iterable, desc=desc)]
 
     if runtime:
         logger.info(f"Runtime: {timer() - t0} seconds")
@@ -114,8 +126,14 @@ class Clock:
             default = {k: kwargs.get(k, now.__getattribute__(k)) for k in elements}
             date = datetime(**default)
 
+        # date data
         self._Raw = deepcopy(date)  # for `reset()`
         self.Date = date
+        self.Year = 0  # initial values
+        self.Month = 0
+        self.Day = 0
+
+        # format elements
         self.Element = elements
         self.Format = DATE_FORMATTER
         self.Frequency = kwargs.get('frequency', 'day')
@@ -298,6 +316,27 @@ def init_logger(name, out_dir=None, level='INFO'):
     out_name = out_dir / name
     logger.add(out_name.with_suffix(".log"), format="{time} {level} {message}", level=level)
     return logger
+
+
+# instance management
+# TODO: use the Pool (like scheduler) to manage the instances (updating)
+class ObjectPool:
+    """An instance pool for the management of instances in bulk"""
+    def __init__(self, namespace):
+        self.pool = []
+        self.namespace = namespace
+        self.Step = 0
+
+    def take(self, obj):
+        self.pool.append(copy.deepcopy(obj))
+
+    def reset(self):
+        self.__init__(self.namespace)
+        return self
+
+    def step(self):
+        for obj in tqdm(self.pool, desc=f'Object pool running at step {self.Step}'):
+            obj.step()
 
 
 if __name__ == "__main__":

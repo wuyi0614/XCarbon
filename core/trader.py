@@ -1,7 +1,9 @@
 # The script for simulations of agents
 from typing import Optional
-from core.base import get_rand_vector, sampling, generate_id, timer, get_current_timestamp, logger
-from core.agent import Order, Statement, Bar, BaseModel, OrderedDict
+from pydantic import BaseModel
+from core.base import generate_id, timer, get_current_timestamp
+from core.stats import get_rand_vector
+from core.market import Order, Statement, Bar, OrderedDict
 
 
 class Decision(BaseModel):

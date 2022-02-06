@@ -11,10 +11,11 @@ import numpy as np
 from tqdm import tqdm
 from copy import deepcopy
 
-from core.base import generate_id, init_logger, jsonify_without_desc, read_config, Clock
+from core.base import snapshot, generate_id, init_logger, jsonify_config_without_desc, read_config, Clock
 from core.stats import mean, logistic_prob, range_prob, get_rand_vector
 from core.market import Order, OrderBook, Statement
 from core.config import get_energy_input_proportion, FOSSIL_ENERGY_TYPES, ENERGY_BASELINE_FACTORS
+
 
 # env vars
 logger = init_logger('Firm')
@@ -123,6 +124,7 @@ def randomize_firm_specs(specs, role='random', inflation=0.1, random_factors=Fal
     # update the specification
     mapping = dict(Price='price', Input='inp', Output='output', Factors='factors',
                    EmissionFactor='emission_factors', Abatement='abatement')
+
     for key, element in mapping.items():
         template_spec.update({key: locals()[element]})
 
@@ -135,6 +137,7 @@ def compliance_allocator(pos: float, clock: Clock, **spec) -> dict:
     compliance_month = spec.get('compliance_month', 12)
     compliance_window = spec.get('compliance_window', 2)
     compliance_ratio = spec.get('compliance_ratio', 0.9)
+
     # how many months before the compliance
     ex_months = compliance_month - compliance_window - clock.Month + 1
     non_comp_month = pos * (1 - compliance_ratio) / ex_months
@@ -194,7 +197,7 @@ A base firm has the following attributes and behaviors and it also evolves with 
     def set_params(self, **params):
         # TODO: very important initialization process
         # copy-paste specifications from config file
-        for k, v in jsonify_without_desc(params).items():
+        for k, v in jsonify_config_without_desc(params).items():
             if k in dir(self):  # the attr exists
                 value = self.__getattribute__(k)
                 if isinstance(v, dict) and isinstance(value, dict):
@@ -206,12 +209,7 @@ A base firm has the following attributes and behaviors and it also evolves with 
 
     def _snapshot(self):
         """Take a snapshot of the agent"""
-        basis = {}
-        for attr in dir(self):
-            if not attr.islower():
-                basis[attr] = self.__getattribute__(attr)
-
-        return basis
+        return snapshot(self)
 
     def cache(self):
         """Make a clone of agent's status, which must be a json-like record in a log file"""
@@ -587,6 +585,37 @@ class RegulatedFirm(BaseFirm):
         """Firms will quit the market if it emits less than a threshold or it loses money from production"""
         # TODO: combined with revenues, firms will quit.
         pass
+
+
+class EngagedFirm(RegulatedFirm):
+    """Engaged firms are a bit different from regulated firms because they make emission mitigation plans first,
+    and then calculate their production inputs. Lastly, actual emissions of firms will be computed.
+    It is updated at 29th Jan. 2022 by Yi.
+
+    When inheriting from `RegulatedFirm`, only need limited rewriting, i.e. `__init__()`
+    """
+
+    def __init__(self, clock, **kwargs):
+        # inherit from the target instance
+        super().__init__(clock, **kwargs)
+
+    def _action_abatement(self, avg_abate_cost: float):
+        """
+        The emission mitigation options have two types:
+        1. negative emission technology such as CCUS, carbon sink
+        2. energy saving technology such as energy efficiency improvement
+
+        The return data of this function is the probability of the firm to invest in an
+        emission mitigation plan with actual emission reduction as well as its cost.
+
+        The probability for the firm to make a decision is highly dependent on its industry.
+        """
+        abate, cost = 0, 0
+        #
+
+        return abate, cost
+
+
 
 
 if __name__ == '__main__':

@@ -1,8 +1,8 @@
 {
-  "theta1": 1.5,
-  "gamma1": 0.2,
+  "theta2": 1.5,
+  "gamma2": 0.2,
   "desc0": "params that determines how fast the abatement cost drops",
-  "theta3": 2,
-  "gamma3": 0.2,
+  "theta1": 2,
+  "gamma1": 0.2,
   "_desc1": "params that adjust the product price in the market"
 }

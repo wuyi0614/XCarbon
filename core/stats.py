@@ -42,7 +42,7 @@ def sampling(vector, size, distribution, replace=False) -> iter:
     return iter(np.random.choice(vector, size, p=p, replace=replace))
 
 
-def get_rand_vector(size, digits=3, low=0, high=1, is_int=False):
+def get_rand_vector(size, digits=3, low=0.0, high=1.0, is_int=False):
     """
     A random number generator by given the size of vector and the number of digits
 
@@ -59,6 +59,45 @@ def get_rand_vector(size, digits=3, low=0, high=1, is_int=False):
     return [round(i * (high - low) + low, digits) for i in np.random.random(size)]
 
 
+def normalization(vector):
+    gap = np.max(vector) - np.min(vector)
+    return (vector - np.min(vector)) / gap
+
+
+def standardization(vector):
+    mu = np.mean(vector, axis=0)
+    sigma = np.std(vector, axis=0)
+    return (vector - mu) / sigma
+
+
+def distribution(vector, mode='linear', digits=3):
+    """Convert a vector into a distribution"""
+    if mode == 'linear':
+        out = np.array(vector) / np.sum(vector)
+
+    elif mode == 'softmax':
+        vector = np.array(vector)
+        vector -= np.max(vector)
+        out = np.exp(vector) / np.sum(np.exp(vector))
+
+    else:
+        logger.error(f'Invalid input for distribution conversion mode: {mode} and use `linear` by default')
+        out = np.array(vector) / np.sum(vector)
+
+    return out.round(digits)
+
+
+def random_distribution(vector, digits=3, var=0.01, mode='linear'):
+    """Randomize a vector by putting a variance `var` into the vector"""
+    vec = np.array(vector)
+    if np.sum(vec) != 1:
+        vec = distribution(vec, mode, digits)
+        logger.warning(f'Invalid distribution vector: {vector} and now {vec}')
+
+    vec -= np.array(get_rand_vector(len(vec), digits, low=-var, high=var))
+    return distribution(vec)
+
+
 def logistic_prob(gamma, theta, x):
     """A logistic-like function that returns probabilities"""
     return 1 + gamma * (1 / (1 + theta ** (-x)) - 0.5)
@@ -67,14 +106,3 @@ def logistic_prob(gamma, theta, x):
 def range_prob(x, speed=0.6):
     """A probability function that returns [0, 1] probs whatever x is positive or negative"""
     return (abs(x) ** speed) * 0.5
-
-
-# default emission accounting parameters
-def emission_account(energy_use, em_factor):
-    """Make sure the units of energy use and emission factor are consistent, for instance:
-
-    - if energy use is x t(coal), then em_factor should use tCO2/t (coal)
-    - if energy use is x MWh, then em_factor should use tCO2/MWh
-    """
-    pass
-

@@ -1,9 +1,7 @@
 {
-  "Tag": "power-industry",
+  "Tag": "power",
   "Unit": 1000000,
   "Price": {
-    "energy-price": 120,
-    "_desc1": "energy price is a synthetic price",
     "material-price": 100,
     "_desc2": "material price is a synthetic price",
     "product-price": 100
@@ -20,22 +18,23 @@
     ]
   },
   "Emission": {
-    "emission-all": 4.46,
+    "emission-all": 0.114,
     "last-emission-all": 0,
-    "energy-emission": 2.86,
-    "material-emission": 1.6,
-    "_desc1": "the thresh´old is `2.6tCO2/t * 26000` = 67600tCO2"
+    "energy-emission": 0.074,
+    "material-emission": 0.04,
+    "_desc1": "the threshold is `2.6tCO2/t * 26000` = 67600tCO2; the unit is 1,000,000"
   },
   "EmissionFactor": {
-    "coal": 2.6,
-    "_desc1": "for example, 2.6tCO2/t coals",
-    "energy-factor": 2.6,
-    "material-factor": 2,
-    "_desc2": "for now, the values are estimated not the real-world data"
+    "material-factor": 0.05,
+    "_desc": "only material-input emission factors should be considered, should be at the same level"
   },
   "Input": {
     "energy": 1.1,
     "material": 0.8,
+    "coal": 0.5,
+    "gas": 0.3,
+    "oil": 0.1,
+    "electricity": 0.2,
     "_desc": "values of inputs should be around ~1 because it's a given attribute of production function"
   },
   "Output": {
@@ -66,8 +65,10 @@
     "tau": -0.4,
     "_desc": "omega is negatively correlated with changes in tau",
     "abate": 0,
-    "abate-cost": 80,
-    "abate-investment": 0
+    "abate-cost": 40,
+    "abate-investment": 0,
+    "abate-weights": {"coal": 0.4, "oil": 0.2, "gas":  0.3, "electricity": 0.2, "ccs": 0.1},
+    "_desc2": "use {} structure to allow different types of abatement technologies with `weights`"
   },
   "Trade": {
     "divide": 100,
