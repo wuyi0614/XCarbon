@@ -1,0 +1,88 @@
+{
+  "Firm": {
+    "industry": "power",
+    "unit": 1000,
+    "Status": 1,
+    "Trader": 1
+  },
+  "Energy": {
+    "EnergyUse": 12000,
+    "InputWeight": {
+      "coal": 0.5,
+      "gas": 0.2,
+      "oil": 0.1,
+      "electricity": 0.2
+    },
+    "EmissionFactor": {
+      "coal": 2.380,
+      "gas": 2.162,
+      "oil": 3.020,
+      "electricity": 0.0009
+    },
+    "EnergyPrice": {
+      "coal": 0.565,
+      "gas": 0.003,
+      "oil": 7,
+      "electricity": 0.0007
+    }
+  },
+  "Production": {
+    "unit": 1000,
+    "EnergyInput": 12000,
+    "MaterialInput": 1600,
+    "AnnualOutput": 15000,
+    "MonthOutput": 3,
+    "ProductPrice": 2,
+    "ProductRevenue": 30000,
+    "MaterialPrice": 1,
+    "Factors": {
+      "alpha0": 50,
+      "beta0": -0.2,
+      "sigma": -0.8,
+      "_desc1": "alpha0/beta0 are params for demand function between price and output, range: 15~200",
+      "thetai": 1.2,
+      "gammai": 0.2,
+      "_desc2": "thetai controls the speed of change in carbon price (should not be too big)",
+      "alpha1": 40000,
+      "alpha2": 0.6,
+      "_desc5": "alpha1 is the divide value of pi0, alpha2 is the share value",
+      "theta2": 1.5,
+      "gamma2": 0.6,
+      "_desc3": "theta controls the speed of trading explosion",
+      "decay": 1,
+      "_desc4": "annual decay rate of allowance allocation in the carbon market"
+    }
+  },
+  "CarbonTrade": {
+    "CarbonPrice": 0.051,
+    "ExpectCarbonPrice": 0.05,
+    "CarbonTradeBalance": 0,
+    "DayPosition": 0,
+    "MonthPosition": {},
+    "ComplianceTrader": 0,
+    "ComplianceSetting": {
+      "compliance_month": 12,
+      "compliance_window": 2,
+      "compliance_ratio": 0.8
+    }
+  },
+  "Finance": {
+    "Bankruptcy": true,
+    "VerifyDuration": 3,
+    "Status": 1,
+    "CostType": [
+      "EnergyCost",
+      "MaterialCost",
+      "AbateCost",
+      "TradeCost",
+      "ComplianceCost"
+    ],
+    "TotalCost": 20000,
+    "RevenueType": [
+      "ProductRevenue",
+      "TradeRevenue"
+    ],
+    "TotalRevenue": 30000,
+    "Profit": 10000
+  }
+}

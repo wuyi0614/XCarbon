@@ -158,6 +158,14 @@ class Scheduler:
         logger.info(f'The trading month is ended at {self.Clock.today()}')
         return self
 
+    def update_yearly_price(self):
+        """Update market prices for energy, material, product (yearly)"""
+        pass
+
+    def update_monthly_price(self):
+        """Update market prices for carbon (monthly)"""
+        pass
+
     def yearly_clear(self):
         """Clear status of agents once a year"""
         # adjust product price by comparing aggregate output of last year and this year

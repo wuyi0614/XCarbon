@@ -106,3 +106,20 @@ def logistic_prob(gamma, theta, x):
 def range_prob(x, speed=0.6):
     """A probability function that returns [0, 1] probs whatever x is positive or negative"""
     return (abs(x) ** speed) * 0.5
+
+
+def choice_prob(*args, **kwargs):
+    """Choice probability of technology options:
+    The base value is x of ( 1/(1 + x^y) ) function, args are values of y
+    The sum of power values is 1.
+    kwargs are ties of `base=power`.
+    """
+    assert len(args) == len(kwargs), f'Mismatched sizes of `args`({len(args)}) and `kwargs`({len(kwargs)}'
+    values = []
+    kwargs = list(kwargs.values())
+    for idx, arg in enumerate(args):
+        base, power = list(kwargs[idx].values())
+        v = (1 / (1 + base ** arg)) ** power
+        values.append(v)
+
+    return np.array(values).cumprod()[-1]

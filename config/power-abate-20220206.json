@@ -1,0 +1,90 @@
+{
+  "_desc1": "abatement options must be industry-specific which can be fitted by real-world data",
+  "_desc2": "Efficiency for `EmissionFactor`, Shift for `InputWeight`, Negative for `Emissions`",
+  "_desc3": "adjustment coefficients can be percents only for `Efficiency` and `Negative`",
+  "_desc4": "each abatement option has an industry-specific potential and price (1,000 currency/tCO2)",
+  "_desc5": "`potential`=the MAXIMUM abatement percentage",
+  "TotalAbatement": 0,
+  "AbateCost": 0,
+  "AbateOption": {
+    "Efficiency": {
+      "coal": {
+        "potential": 0.1,
+        "price": 0.5,
+        "discount": 0.06,
+        "lifespan": 10
+      },
+      "gas": {
+        "potential": 0.05,
+        "price": 0.7,
+        "discount": 0.06,
+        "lifespan": 10
+      },
+      "oil": {
+        "potential": 0.02,
+        "price": 0.6,
+        "discount": 0.06,
+        "lifespan": 10
+      },
+      "electricity": {
+        "potential": 0.1,
+        "price": 0.6,
+        "discount": 0.06,
+        "lifespan": 10
+      }
+    },
+    "_desc5": "shift means the energy consumption moves from `coal` to `gas` with an annual rate of 1% for 5 yrs",
+    "_desc6": "the price for shifting is the fixed investment cost",
+    "Shift": {
+      "coal_to_gas": {
+        "org": "coal",
+        "tar": "gas",
+        "potential": 0.5,
+        "discount": 0.06,
+        "price": 0.4,
+        "lifespan": 25
+      },
+      "oil_to_gas": {
+        "org": "oil",
+        "tar": "gas",
+        "potential": 0.5,
+        "discount": 0.06,
+        "price": 0.3,
+        "lifespan": 25
+      }
+    },
+    "Negative": {
+      "ccs": {
+        "potential": 0.3,
+        "price": 0.6,
+        "discount": 0.06,
+        "lifespan": 20
+      }
+    },
+    "_desc9": "the entry probability is the lowest probability for firms to take options"
+  },
+  "AbateWeight": {
+    "Efficiency": 0.2,
+    "Shift": 0.4,
+    "Negative": 0.4
+  },
+  "AdoptProb": {
+    "Efficiency": 0.3,
+    "Shift": 0.35,
+    "Negative": 0.4
+  },
+  "AdoptProbParam": {
+    "Position": {
+      "base": 1.001,
+      "power": 0.3
+    },
+    "CarbonPrice": {
+      "base": 0.01,
+      "power": 0.5
+    },
+    "AbateCost": {
+      "base": 50,
+      "power": 0.2
+    }
+  }
+}

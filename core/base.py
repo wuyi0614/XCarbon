@@ -33,10 +33,13 @@ DEFAULT_LOGGING_DIR.mkdir(exist_ok=True, parents=True)
 
 
 # scaffold for functional operations
-def snapshot(obj: object):
+def snapshot(obj: object, skip=None):
     basis = {}
+    if not skip:
+        skip = ['Config']  # Config is an attr of pydantic
+
     for attr in dir(obj):
-        if not attr.islower():
+        if not attr.islower() and attr not in skip:
             basis[attr] = obj.__getattribute__(attr)
 
     return basis
@@ -316,27 +319,6 @@ def init_logger(name, out_dir=None, level='INFO'):
     out_name = out_dir / name
     logger.add(out_name.with_suffix(".log"), format="{time} {level} {message}", level=level)
     return logger
-
-
-# instance management
-# TODO: use the Pool (like scheduler) to manage the instances (updating)
-class ObjectPool:
-    """An instance pool for the management of instances in bulk"""
-    def __init__(self, namespace):
-        self.pool = []
-        self.namespace = namespace
-        self.Step = 0
-
-    def take(self, obj):
-        self.pool.append(copy.deepcopy(obj))
-
-    def reset(self):
-        self.__init__(self.namespace)
-        return self
-
-    def step(self):
-        for obj in tqdm(self.pool, desc=f'Object pool running at step {self.Step}'):
-            obj.step()
 
 
 if __name__ == "__main__":

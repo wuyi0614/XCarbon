@@ -7,9 +7,8 @@
 Specify firm-like agents given theories from economics
 """
 
-import numpy as np
-from tqdm import tqdm
 from copy import deepcopy
+from random import sample
 
 from core.base import snapshot, generate_id, init_logger, jsonify_config_without_desc, read_config, Clock
 from core.stats import mean, logistic_prob, range_prob, get_rand_vector
@@ -65,14 +64,27 @@ def randomize_firm_specs(specs, role='random', inflation=0.1, random_factors=Fal
             # TODO: the fluctuation seems arbitrary here. And more inflation rates are specified below
             r = get_rand_vector(1, low=-inflation, high=inflation, digits=3).pop()
             factor_[f] = factors[f] * (1 + r)
+            if f == 'alpha2':
+                if factor_[f] < 0.3:
+                    factor_[f] = 0.3
+                elif factor_[f] > 0.7:
+                    factor_[f] = 0.7
+                else:
+                    continue
 
         factors.update(factor_)
 
-    # adjust output values
-    ann_out_ratio = get_rand_vector(1, low=-20, high=20, is_int=True).pop()
-    adj_ann_out = output['annual-output'] + ann_out_ratio
+    # adjust output values: the best value for pi1 ranges in [0.3, 0.4]
+    ann_out_ratio = get_rand_vector(1, low=-20, high=20, is_int=True).pop() / 100
+    adj_ann_out = output['annual-output'] + (1 + ann_out_ratio)
+    if ann_out_ratio < 0:  # biased to the left, use smaller score to adjust
+        best_pi1_score = sample(range(300, 350, 1), 1).pop() / 1000
+    else:
+        best_pi1_score = sample(range(350, 400, 1), 1).pop() / 1000
+
+    alpha1 = adj_ann_out / best_pi1_score
     adj_mon_out = adj_ann_out / 12
-    alpha1 = factors['alpha1'] + ann_out_ratio  # keep track on annual output
+    # keep track on annual output
     output.update({'annual-output': adj_ann_out, 'monthly-output': adj_mon_out, 'last-output': adj_ann_out})
     factors.update({'alpha1': alpha1})
 
@@ -180,6 +192,7 @@ A base firm has the following attributes and behaviors and it also evolves with 
         self.Name = kwargs.get('name', self.uid)
         # set up parameters
         self.set_params(**kwargs)
+        self.added = []
         # not used but recorded stuff
         self._Record = {}
 
@@ -211,6 +224,12 @@ A base firm has the following attributes and behaviors and it also evolves with 
         """Take a snapshot of the agent"""
         return snapshot(self)
 
+    def add(self, *objs):
+        for obj in objs:  # each obj is a BaseComponent
+            name = obj.__class__.__name__
+            self.__setattr__(name, obj)
+            self.added += [name]
+
     def cache(self):
         """Make a clone of agent's status, which must be a json-like record in a log file"""
         logger.info(f"""Firm Cache [{self.uid}]:{list(self._snapshot().items())}""")
@@ -232,8 +251,8 @@ A base firm has the following attributes and behaviors and it also evolves with 
 class RegulatedFirm(BaseFirm):
     """Regulated industry firms inherited from BaseFirm"""
 
-    def __init__(self, clock, **spec):
-        super(RegulatedFirm, self).__init__()
+    def __init__(self, clock, *objs, **config):
+        super(RegulatedFirm, self).__init__(**config)
         # additional attributes for regulated firms (attributes should be unique and not crossed
         # NB. the unit should be unified into (Thousand RMB Yuan), e.g. 100,000 (000) output
         self.Input = {'energy': 0, 'material': 0}
@@ -279,7 +298,10 @@ class RegulatedFirm(BaseFirm):
         self.Compliance = 0  # 1=compliance trader; 0=non-compliance trader
 
         # set up parameters
-        self.set_params(**spec)
+        self.set_params(**config)
+
+        # add up objects
+        self.add(objs)
 
         # for those variables that will not be updated but changeable through processing, name them with `_` as prefix
         self._Orders = {'order': [], 'deal': []}
@@ -310,72 +332,9 @@ class RegulatedFirm(BaseFirm):
         self.validate()
         return self
 
-    @staticmethod
-    def _get_energy_input(pi0, rho0, rho1, rho2, alpha1, alpha2):
-        """Some best params: pi0=100, alpha=130, rho=0.6, alpha2=0.4"""
-        pi1 = (pi0 / alpha1) ** rho0  # (pi0 / alpha1) is relatively fixed, but rho0 is not
-        item1 = ((1 - alpha2) / pi1) * ((rho1 / rho2 / rho0) * ((1 - alpha2) / alpha2)) ** (rho0 / (1 - rho0))
-        item2 = alpha2 / pi1
-        return (item1 + item2) ** rho0
-
-    @staticmethod
-    def _get_material_input(pi0, rho0, rho1, rho2, alpha1, alpha2):
-        pi1 = (pi0 / alpha1) ** rho0  # (pi0 / alpha1) is relatively fixed, but rho0 is not
-        item1 = (alpha2 / pi1) * ((rho2 / rho1 / rho0) * (alpha2 / (1 - alpha2))) ** (rho0 / (1 - rho0))
-        item2 = (1 - alpha2) / pi1
-        return (item1 + item2) ** rho0
-
-    @staticmethod
-    def _get_expected_output(ue, ui, alpha1, alpha2, rho0):
-        return alpha1 * (alpha2 * ((alpha2 * ue) ** rho0) + (1 - alpha2) * ((alpha2 * ui) ** rho0)) ** (1 / rho0)
-
-    @classmethod
-    def _get_inputs(cls, price, carbon_price, factors, emission_factors, pi0: float):
-        # TODO: energy inputs should be reconsidered
-        # make sure rho0/rho1/rho2 have a bigger value, rho1 and rho2 are relatively fixed values
-        rho0 = 1 - 1 / factors['sigma']
-        # TODO: ...
-        rho1 = price['energy-price'] - mean(carbon_price['last-carbon-price']) * emission_factors['energy-factor']
-        rho2 = price['material-price'] - mean(carbon_price['last-carbon-price']) * emission_factors['material-factor']
-        rho1 = rho1 if rho1 != 0 else 0.1
-        rho2 = rho2 if rho2 != 0 else 0.1
-        # if one of them is negative, sigma should change (make sure rho0 * rho1 or rho0 * rho2 is positive)
-        if (rho1 * rho0 * rho2) < 0:
-            rho0 = 1 - 1 / (- factors['sigma'])
-
-        # compute the optimal inputs
-        ue = cls._get_energy_input(pi0, rho0, rho1, rho2, factors['alpha1'], factors['alpha2'])
-        ui = cls._get_material_input(pi0, rho0, rho1, rho2, factors['alpha1'], factors['alpha2'])
-        return ue, ui
-
     def _action_production(self):
         """Firms make production plan based on the minimized cost"""
-        factors = self.Factors  # make persistence of variables for quick testing
-        price = self.Price
-        carbon_price = self.CarbonPrice
-        emission_factors = self.EmissionFactor
-        rho0 = 1 - 1 / factors['sigma']
-
-        # NB. the initial output is given by the config but when Step>1, it's decided by product price
-        if self.Step > 1:
-            output = factors['alpha0'] * price['product-price'] ** factors['beta0']
-            self.Output.update({'annual-output': output, 'monthly-output': output / 12})
-
-        pi0 = self.Output['last-output']
-        ue, ui = self._get_inputs(price, carbon_price, factors, emission_factors, pi0)
-
-        # updated at 2021-12-08, energy use will be distributed by energy input structure
-        prop = get_energy_input_proportion(self.Tag)
-        energy_prop = {k: v * ue for k, v in prop.items()}
-        energy_prop.update({'energy': ue, 'material': ui})
-
-        y_ = self._get_expected_output(ue, ui, factors['alpha1'], factors['alpha2'], rho0)  # for purpose of display
-        self._record(expected_output=y_)
-
-        # update input and output
-        self.Input.update(energy_prop)
-        self.Output.update({'last-output': pi0})
-        self.Output.update({'annual-output': pi0})
+        pass
 
     def _action_allowance(self, decay=1):
         """Allowance allocation: benchmarking mechanism"""
@@ -438,7 +397,6 @@ class RegulatedFirm(BaseFirm):
 
     def _action_trade_decision(self):
         """Trade decision happens on a specific frequency basis (usually the monthly basis)"""
-        # TODO: 大企业比如华能集团（拥有很多的电厂和配额）的交易行为会因为持有配额数量多而发生改变
         # here you adjust the position of a firm
         carbon = self.CarbonPrice
         trade = self.Trade
@@ -504,8 +462,9 @@ class RegulatedFirm(BaseFirm):
                                   'daily-trade-position': month_position / self.Clock.workdays_left()})
 
     def _action_revenue(self):
-        """Firms accounts their revenue at the end of the year and affect the next-year's plan (production)"""
-        # NB. remember to collect the revenue/cost from carbon trading
+        """Firms accounts their revenue at the end of the year and affect the next-year's plan (production).
+        Costs and revenues come from: Energy, material, Abatement, Trading
+        """
         pass
 
     def _trade(self, current: float):
@@ -528,7 +487,7 @@ class RegulatedFirm(BaseFirm):
         prob = 1 + get_rand_vector(1, low=-eps, high=eps).pop()  # price +- |eps|
         # TODO: apply a better strategy to update firm's expected carbon price
 
-        # agent trades on a daily basis so it should be divided into even shares
+        # agent trades on a daily basis, and it should be divided into even shares
         order = Order(price=exp_carbon_price * prob,
                       mode='sell' if position['trade-position'] > 0 else 'buy',
                       quantity=position['daily-trade-position'],
@@ -580,11 +539,6 @@ class RegulatedFirm(BaseFirm):
             logger.info(f'Firm {self.uid}: take action at step={self.Step}')
 
         return self
-
-    def quit(self):
-        """Firms will quit the market if it emits less than a threshold or it loses money from production"""
-        # TODO: combined with revenues, firms will quit.
-        pass
 
 
 class EngagedFirm(RegulatedFirm):
