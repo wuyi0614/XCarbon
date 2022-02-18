@@ -66,6 +66,9 @@
       "compliance_ratio": 0.8
     }
   },
+  "Policy": {
+    "PenaltyRate": 0.2
+  },
   "Finance": {
     "Bankruptcy": true,
     "VerifyDuration": 3,

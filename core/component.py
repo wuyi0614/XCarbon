@@ -569,7 +569,7 @@ class CarbonTrade(BaseComponent):
 
         position = np.zeros(12)
         # sum up the positions before the current month (12 months)
-        total_position = sum(list(self.MonthPosition.values()))
+        total_position = self.AnnualPosition
         past = self.clock.Month - 1
         position[:past] = 0  # set 0 for the past months
 
@@ -587,12 +587,17 @@ class CarbonTrade(BaseComponent):
         and allocator should returns allowances at a monthly basis and then it will be divided at a daily basis.
         """
         position = np.zeros(12)
-        total_position = sum(list(self.MonthPosition.values()))
+        total_position = self.AnnualPosition
         past = self.clock.Month - 1
         position[:past] = 0  # set 0 for the past months
 
         position[past:] = total_position / (12 - self.clock.Month)
         return {idx: position[idx - 1] for idx in range(1, 13, 1)}
+
+    def update_annual_position(self, position: float):
+        """Update monthly/daily position by passing a new AnnualPosition (before .reset())"""
+        self.AnnualPosition = position
+        self.adjust_position()
 
     def adjust_position(self, **kwargs):
         """Compliance trader shows different patterns"""
@@ -601,7 +606,7 @@ class CarbonTrade(BaseComponent):
         if self.step == 0:  # initiation
             energy = self.Energy
             position = energy['Allocation'] - sum(list(energy['Emission'].values()))
-            self.MonthPosition = {1: position}
+            self.AnnualPosition = position
 
         elif self.step > 2:  # only when the trading periods go over 3 months
             position = self.get_position('month')
@@ -632,6 +637,7 @@ class CarbonTrade(BaseComponent):
 
             # update the trade position
             self.MonthPosition[self.clock.Month] = position_
+            self.AnnualPosition = sum(list(self.MonthPosition.values()))
 
         # run `allocation` only after the reaction of firms to the market
         if self.ComplianceTrader:
@@ -717,6 +723,10 @@ class CarbonTrade(BaseComponent):
         position = self.get_position('month')  # generally, traded quantity will not exceed the daily position
         # if order position exceeds the monthly position, it will be distributed to the coming months
         quant = statement.quantity
+        # update the Trade&Order record
+        self.Trade += quant
+        self.Order = statement.dict()
+
         # measure cost/revenue from trading
         if quant < 0:
             self.TradeCost += quant * statement.price
@@ -731,9 +741,6 @@ class CarbonTrade(BaseComponent):
             # it has to be distributed to the coming months because this month's data is biased
             self.adjust_position()
 
-        # update the Trade&Order record
-        self.Trade += quant
-        self.Order = statement.dict()
         return self
 
 
@@ -915,35 +922,52 @@ class Finance(BaseComponent):
 class Policy(BaseComponent):
     """Policy module controls industry-specific uncertainty and costs on firms"""
     # general setting
-    # 1=trade, 0=quit, which is a long-term behavior buz the verification period is 3yrs
-    Trader: int = 1
+    Holding: float = 0.0  # holding of allowance after compliance
+    ComplianceCost: float = 0.0  # penalty from compliance, if penalty>0, the firm is punished
+    PenaltyRate: float = 0.0  # configured in config file, the rate of penalty (unit: 1000/tonne)
 
     # inherit from external instances
+    external: list = ['Firm', 'Energy', 'CarbonTrade']
+    Firm: dict = {}
+    Energy: dict = {}
     CarbonTrade: dict = {}
 
     def __init__(self, **config):
         super().__init__(**config)
 
-        # industry-specific policy effect
-        pass
-
-    def _run(self, firm: BaseFirm):
+    def _run(self):
         """Execute uncertainty cost on firm"""
-        pass
+        self.ComplianceCost, self.Holding = self.get_compliance()
 
-    def verify(self):
-        """Verify firm's allowance position for compliance"""
+    def get_compliance(self):
+        """Verify firm's allowance position for compliance and return a tuple of (penalty, holding)"""
+        if self.Firm['Trader'] == 0:
+            return 0, 0
+
         carbon = self.CarbonTrade
         energy = self.Energy
-        if (carbon['Trade'] + energy['Allocation']):
-            pass
-        else:
-            pass
+        total_emission = sum(list(energy['Emission'].values()))
+        # NB. for `.Trade`, negative means buyer, positive means seller
+        holding = carbon['Trade'] + energy['Allocation']
+        if holding >= total_emission:  # successful compliance
+            # offset its position and allow banking of allowances to the next stage
+            holding = holding - total_emission
+            penalty = 0
+        else:  # failed compliance
+            # get penalty
+            penalty = round(self.PenaltyRate * (total_emission - holding), 3)
+            holding = 0
+
+        return penalty, holding
+
+    def get_subsidy(self):
+        """Reserved function for subsidy"""
+        pass
 
 
 if __name__ != '__main__':
     from core.base import Clock
-    # Test Pipeline:
+    # Test Pipeline (a loop within a year):
     config = read_config('config/power-firm-20220206.json')
     firm = BaseFirm()
     clock = Clock('2020-01-01')
@@ -970,8 +994,11 @@ if __name__ != '__main__':
                       industry='power', **abate_config)
     abate.forward()
     # test policy module
-    policy = Policy()
+    policy = Policy(Firm=firm, Energy=energy, CarbonTrade=carbon, **config['Policy'])
     policy.forward()
+    # update the `AnnualPosition` attribute of CarbonTrade
+    carbon.update_annual_position(policy.Holding)
+
     # test finance module
     finance = Finance(Production=production.snapshot(),
                       Energy=energy.snapshot(),

@@ -14,7 +14,7 @@ from core.base import snapshot, generate_id, init_logger, jsonify_config_without
 from core.stats import mean, logistic_prob, range_prob, get_rand_vector
 from core.market import Order, OrderBook, Statement
 from core.config import get_energy_input_proportion, FOSSIL_ENERGY_TYPES, ENERGY_BASELINE_FACTORS
-
+from core.component import BaseComponent
 
 # env vars
 logger = init_logger('Firm')
@@ -168,84 +168,37 @@ def non_compliance_allocator(pos: float, clock: Clock, **spec) -> dict:
 
 
 # classes for firms
-class BaseFirm:
-    """
-A base firm has the following attributes and behaviors and it also evolves with the time goes.
-    Attributes:
-      - production
-
-    Functions:
-      ...
-
-    """
-
-    def __init__(self, **kwargs):
+class BaseFirm(BaseComponent):
+    """A base firm has the following attributes and behaviors and it also evolves with the time goes."""
+    
+    def __init__(self, **config):
+        super().__init__(**config)
         # the following are unchangeable attributes for a firm, e.g. `uid` is unique and fixed
-        self.uid = generate_id()
+        self.uid = config.get('uif', generate_id())
         # the unit of economic value
-        self.Unit = 1000
+        self.unit = 1000
         # basic attributes (init state), the preferable structure of attrs is `dict`
-        self.Step = 0
+        self.step = 0
         # `dict` enables records about subsidiary attrs and all attrs should be defined to start with a capitalised char
         self.Attribute = {}  # here .Attribute is a generalized attribute
-        self.Tag = 'unknown'  # industry tag that distinguishes firms
-        self.Name = kwargs.get('name', self.uid)
+        self.industry = 'unknown'  # industry tag that distinguishes firms
         # set up parameters
-        self.set_params(**kwargs)
-        self.added = []
+        self.fit(**config)
         # not used but recorded stuff
-        self._Record = {}
+        self._Record = {}  # be cache in the update
 
-    def __repr__(self):
-        """Output more information about the agent"""
-        basis = self._snapshot()
-        return f"""Firm [{self.uid}] at step={self.Step} with status: 
-    {list(basis.items())}"""
-
-    def _record(self, **kwargs):
-        kws = {k.replace('_', '-'): v for k, v in kwargs.items()}
-        self._Record.update(kws)
-        return self
-
-    def set_params(self, **params):
-        # TODO: very important initialization process
-        # copy-paste specifications from config file
-        for k, v in jsonify_config_without_desc(params).items():
-            if k in dir(self):  # the attr exists
-                value = self.__getattribute__(k)
-                if isinstance(v, dict) and isinstance(value, dict):
-                    value.update(v)
-                else:
-                    value = v
-
-                self.__setattr__(k, value)
-
-    def _snapshot(self):
-        """Take a snapshot of the agent"""
-        return snapshot(self)
-
-    def add(self, *objs):
-        for obj in objs:  # each obj is a BaseComponent
-            name = obj.__class__.__name__
-            self.__setattr__(name, obj)
-            self.added += [name]
-
-    def cache(self):
-        """Make a clone of agent's status, which must be a json-like record in a log file"""
-        logger.info(f"""Firm Cache [{self.uid}]:{list(self._snapshot().items())}""")
-
-    def forward(self, show=False):
+    def forward(self, show=False, **kwargs):
         # make changes to their attributes here and enter the next phrase
-        self.action()
-        self.Step += 1
-        if show:
-            logger.info(f'Firm {self.uid}: forward next step={self.Step}')
+        if self.uid == 'unknown':
+            logger.warning(f'UID not properly setup and remain {self.uid}')
 
-    def action(self, show=False):
-        """Action space allows to specify different events, decisions, and behaviors and is executed by `forward`"""
-        # hereby define a list of actions a firm would do in a period
+        self._run(**kwargs)
+        self._cache()
+        self.step += 1
         if show:
-            logger.info(f'Firm {self.uid}: take action at step={self.Step}')
+            logger.info(f'Firm {self.uid}: forward the next step={self.step}')
+
+        return self
 
 
 class RegulatedFirm(BaseFirm):
@@ -288,9 +241,8 @@ class RegulatedFirm(BaseFirm):
                          'monthly-trade-position': {}, 'daily-trade-position': 0}
         self.Allocation = {'allocation': 0, 'last-allocation': 0}
 
-        # trade decision
-        self.Trade = {'traded-allowance': [0], 'last-traded-allowance': [0],
-                      'price-pressure-ratio': 0, 'quantity-pressure-ratio': 0}
+        # ETS related params, as for Penalty, check the Finance
+        self.Trader: int = 1  # 1=trader, 0=quitter
 
         # agent status
         self.Status = 0  # 1=activated; 0=deactivated
@@ -305,6 +257,10 @@ class RegulatedFirm(BaseFirm):
 
         # for those variables that will not be updated but changeable through processing, name them with `_` as prefix
         self._Orders = {'order': [], 'deal': []}
+
+    def snapshot(self):
+        """Take a snapshot of firm's attributes"""
+        pass
 
     def activate(self):
         """Activate agent as a valid firm with status=1, step=1"""
