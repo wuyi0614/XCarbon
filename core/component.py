@@ -21,7 +21,6 @@ from core.base import init_logger, snapshot, jsonify_config_without_desc, read_c
 from core.stats import random_distribution, get_rand_vector, range_prob, logistic_prob, mean, \
     choice_prob
 
-from core.firm import BaseFirm
 from core.market import Order, Statement
 
 # create a logger
@@ -337,6 +336,7 @@ class Abatement(BaseComponent):
     TechniqueType: list = []  # efficiency, ccs, shift (i.e. from coal to gas)
     TotalAbatement: float = 0  # total abatement
     AbateCost: float = 0  # aggregate cost of abatement
+    # TODO: allow suggest position to be negative, then they sell allowances
     SuggestPosition: float = 0  # if abatement, SuggestPosition!=Position; otherwise, equal
     Option: dict = {}  # adopted options (if `shift` in it, update Energy instance)
 
@@ -365,12 +365,17 @@ class Abatement(BaseComponent):
         self.update_abate(options)
 
     def update_abate(self, options):
+        """Update abatement options and its costs (update optimal position as well)"""
         for key, value in options.items():
             if key in self.TechniqueType:
                 self.TotalAbatement += value['abate']
-                self.AbateCost += value['cost']
+                self.AbateCost += value['cost'].sum()
             else:
-                self.SuggestPosition = value
+                self.SuggestPosition = value - self.TotalAbatement
+
+        self.TotalAbatement = round(self.TotalAbatement, 3)
+        self.AbateCost = round(self.AbateCost, 3)
+        self.SuggestPosition = round(self.SuggestPosition, 3)
 
     @staticmethod
     def get_efficiency_abatement(energy, fuel, potential, price, discount, lifespan, **kwargs):
@@ -418,7 +423,7 @@ class Abatement(BaseComponent):
         """
 
         # define the minimum function
-        def minimum_abate_cost(x):
+        def minimum_abate(x):
             # x: 0=efficiency, 1=shift, 2=negative, 3=trade
             # w: 0=eff-weight, 1=shift-weight, 2=neg-weight
             return w[0] * x[0] + w[1] * x[1] + w[2] * x[2] + x[3]
@@ -438,7 +443,7 @@ class Abatement(BaseComponent):
         cons3 = [{'type': 'ineq', 'fun': lambda x: x[idx]} for idx in range(4)]
         cons = cons1 + cons2 + cons3
 
-        result = minimize(minimum_abate_cost,
+        result = minimize(minimum_abate,
                           init,
                           constraints=cons,
                           method='SLSQP',
@@ -541,13 +546,13 @@ class CarbonTrade(BaseComponent):
     ComplianceTrader: int = 0  # 1=compliance trader; 0=non-compliance trader
     ComplianceSetting: dict = {}  # compliance setting works only if `ComplianceTrader=1`
 
-    Trade: float = 0.0  # traded allowance accounting
+    Traded: float = 0.0  # traded allowance accounting
     Order: dict = {}  # where historic orders are stored (dict transformed from `Order` object)
 
     def __init__(self, **config):
         super().__init__(**config)
-        # after adding the Firm object,
-        # get initial position from `Energy.Allocation` and `Energy.Emission`
+        # .forward() will be executed at a yearly basis
+        # .forward_day() will
 
     def _run(self, **kwargs):
         """Must be careful about the execution order of functions. The update frequency is `month`.
@@ -556,6 +561,15 @@ class CarbonTrade(BaseComponent):
         self.get_price(**kwargs)
         # must collect the return result and run `clear` in Firm's context with `Statement` input
         return self.get_decision(**kwargs)
+
+    def forward_day(self, current_price, prob, dist='linear'):
+        """Pass in the current carbon price and make a decision if doing bid/ask ..."""
+        # self.ExpectCarbonPrice should be updated day by day
+        self.CarbonPrice = current_price
+        self.get_price(dist)
+        order = self.get_decision(current_price, prob)
+        prob_ = range_prob(self.DayPosition, speed=0.05)
+        return order if prob_ >= prob else None
 
     # NB. allocator can be tailored not only for `compliance/non-compliance`
     def compliance_allocator(self) -> dict:
@@ -626,7 +640,7 @@ class CarbonTrade(BaseComponent):
                 if qty_gap > 0:
                     qty_pressure = logistic_prob(theta=factors['theta3'],
                                                  gamma=factors['gamma3'],
-                                                 x=position['trade-position'])
+                                                 x=self.Traded)
                     qty_drive_position = qty_pressure * position
 
             # get the minimum/maximum position under pressure or not
@@ -658,7 +672,7 @@ class CarbonTrade(BaseComponent):
         else:  # `month` or the other frequency, return the monthly position
             return self.MonthPosition[self.clock.Month]
 
-    def get_price(self, prob='linear', **kwargs):
+    def get_price(self, dist='logistic', **kwargs):
         """Get trading price and its expected price (ensure `Firm` object is added).
         Support `linear` or `logistic` probability distribution."""
         factors = self.Factors
@@ -667,13 +681,14 @@ class CarbonTrade(BaseComponent):
 
         # Sellers are not expecting carbon prices falling, but they do hope it could grow
         # The true logic is, when they hold more, they trade more aggressively
-        if prob == 'logistic':
+        if dist == 'logistic':
             gammai = factors['gammai'] - self.clock.Month / 9  # a bodge but it must be 9 (12 - 3, compliance period)
             gammai = gammai - 0.01 if gammai == 0 else gammai
             upper_prob = logistic_prob(theta=factors['thetai'], gamma=gammai, x=-month_position)
             lower_prob = logistic_prob(theta=factors['thetai'], gamma=factors['gammai'], x=-month_position)
         else:
-            prob = range_prob(month_position / 100, 0.6)
+            # TODO: the linear mode is not correct with its `speed` param
+            prob = range_prob(month_position, 0.01) - 0.5
             upper_prob, lower_prob = prob + 1, 1 - prob
 
         # the final probability for the adjustment of carbon price
@@ -682,7 +697,7 @@ class CarbonTrade(BaseComponent):
         else:
             prob = get_rand_vector(1, low=upper_prob, high=lower_prob).pop()
 
-        self.ExpectCarbonPrice = cur_price * prob
+        self.ExpectCarbonPrice = round(cur_price * prob, 6)
         return self.ExpectCarbonPrice
 
     def get_decision(self, realtime_price: float = 0.0, prob: float = 0.0, **kwargs):
@@ -707,6 +722,7 @@ class CarbonTrade(BaseComponent):
         pr = 1 + get_rand_vector(1, low=-eps, high=eps).pop()  # eq: price +- |eps|
 
         # TODO: apply a better strategy to update firm's expected carbon price
+        #       还有一种策略是，将orderbook中的订单序列和企业的预期关联起来，实时更新
         # agent trades on a daily basis, and it should be divided into even shares
         order = Order(price=exp_price * pr,
                       mode='sell' if position > 0 else 'buy',
@@ -714,8 +730,7 @@ class CarbonTrade(BaseComponent):
                       offerer_id=self.uid)
 
         # firms obtain a random digit to decide if they trade or not
-        prob_ = range_prob(position)
-        return order if prob_ >= prob else None
+        return order
 
     def clear(self, statement: Statement):
         """Transform an order and offset the position. The frequency of calling `clear` function is
@@ -948,7 +963,7 @@ class Policy(BaseComponent):
         energy = self.Energy
         total_emission = sum(list(energy['Emission'].values()))
         # NB. for `.Trade`, negative means buyer, positive means seller
-        holding = carbon['Trade'] + energy['Allocation']
+        holding = carbon['Traded'] + energy['Allocation']
         if holding >= total_emission:  # successful compliance
             # offset its position and allow banking of allowances to the next stage
             holding = holding - total_emission
@@ -965,13 +980,28 @@ class Policy(BaseComponent):
         pass
 
 
+class Strategy(BaseComponent):
+    """Create a strategy to generate firms with specific settings"""
+
+    # NB. scales of production/energy use/emission are important
+
+    def __init__(self):
+        pass
+
+
 if __name__ != '__main__':
     from core.base import Clock
-    # Test Pipeline (a loop within a year):
+    from core.firm import RegulatedFirm
+    from core.market import OrderBook, CarbonMarket
+
+    # Test Pipeline (a loop within a year) by:
+    # (1) energy, (2) production, (3) abatement, (4) carbon trade, (5) policy, (6) finance
+
     config = read_config('config/power-firm-20220206.json')
-    firm = BaseFirm()
     clock = Clock('2020-01-01')
-    # test energy module
+
+    firm = RegulatedFirm(clock)
+    # test energy module (a yearly clear)
     energy = Energy(False, **config['Energy'])
     energy.forward()
     assert energy.Allocation <= energy.get_total_emission(), f'Invalid initiation: allocation>=emission'
@@ -979,23 +1009,36 @@ if __name__ != '__main__':
     # test carbon module
     carbon = CarbonTrade(clock=clock, Energy=energy.snapshot(),
                          Factors=config['Production']['Factors'], **config['CarbonTrade'])
-    carbon.forward()
+    carbon.forward()  # a yearly forward (initial)
     assert sum(list(carbon['MonthPosition'].values())), f'Invalid initiation: {carbon["MonthPosition"]}'
-    # test production module
+
+    # test production module (a yearly clear)
     production = Production(Energy=energy.snapshot(),
                             CarbonTradeCache=carbon.cache,
                             **config['Production'])
     production.forward()
-    # test abatement module
+
+    # test abatement module (a yearly clear)
     abate_config = read_config('config/power-abate-20220206.json')
     abate = Abatement(Energy=energy.snapshot(),
                       CarbonTrade=carbon.snapshot(),
                       Production=production.snapshot(),
                       industry='power', **abate_config)
     abate.forward()
-    # test policy module
+
+    # test daily trading decision and clearance
+    book = OrderBook('day')
+    market = CarbonMarket(book, clock, 'day')
+
+    for _ in range(30):
+        p = get_rand_vector(1, 3, low=0.045, high=0.06).pop()
+        pr = get_rand_vector(1, 2, low=0, high=1).pop()
+        order = carbon.forward_day(p, pr)
+
+    # test policy module (a yearly clear)
     policy = Policy(Firm=firm, Energy=energy, CarbonTrade=carbon, **config['Policy'])
     policy.forward()
+
     # update the `AnnualPosition` attribute of CarbonTrade
     carbon.update_annual_position(policy.Holding)
 
@@ -1006,3 +1049,4 @@ if __name__ != '__main__':
                       CarbonTrade=carbon.snapshot(),
                       Policy=policy.snapshot(),
                       **config['Finance'])
+    finance.forward()
