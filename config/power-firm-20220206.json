@@ -59,6 +59,7 @@
     "CarbonTradeBalance": 0,
     "DayPosition": 0,
     "MonthPosition": {},
+    "AnnualPosition": 0,
     "ComplianceTrader": 0,
     "ComplianceSetting": {
       "compliance_month": 12,
