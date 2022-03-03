@@ -224,6 +224,7 @@ class Order(BaseModel):
                    self.mode == "sell" and transaction.mode == "buy" and transaction.price >= self.price)
 
         if any(success):
+            # NB. modified at 2022-03-03, change te current timestamp to clock's timestamp
             ts = ts if ts else self.timestamp()
             # settlement price is the mean value of the two orders
             settle_price = mean([transaction.price, self.price], digits=self.digits)
@@ -239,18 +240,18 @@ class Order(BaseModel):
                 # at seller side, the gap is positive
                 self.quantity = qty_diff if success[0] else abs(qty_diff)
                 self.status = "waiting"
-                self.ts = self.timestamp()
+                self.ts = ts
 
                 # update transaction
                 transaction.status = "accepted"
                 transaction.offeree_id = self.offerer_id
-                transaction.ts = self.timestamp()
+                transaction.ts = ts
 
             else:
                 # transaction is fulfilled
                 qty_settle = deepcopy(abs(self.quantity))
                 self.status = "accepted"
-                transaction.ts = transaction.timestamp()
+                transaction.ts = ts
                 # at the seller side (success[1]=True), transaction is from buyer side and its qty < 0
                 transaction.quantity = qty_diff if success[0] else -qty_diff
 

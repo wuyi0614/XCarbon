@@ -640,10 +640,9 @@ class CarbonTrade(BaseComponent):
             quant = -quant
 
         self.MonthPosition[self.clock.Month] = position + quant  # opposite
-        if quant > position:
-            # it has to be distributed to the coming months because this month's data is biased
-            self.adjust_position()
-
+        self.AnnualPosition += quant
+        # adjust month position, day position, leave annual position unchanged
+        self.adjust_position()
         return self
 
 
@@ -830,8 +829,7 @@ class Policy(BaseComponent):
     PenaltyRate: float = 0.0  # configured in config file, the rate of penalty (unit: 1000/tonne)
 
     # inherit from external instances
-    external: list = ['Firm', 'Energy', 'CarbonTrade']
-    Firm: dict = {}
+    external: list = ['Energy', 'CarbonTrade']
     Energy: dict = {}
     CarbonTrade: dict = {}
 
@@ -844,9 +842,6 @@ class Policy(BaseComponent):
 
     def get_compliance(self):
         """Verify firm's allowance position for compliance and return a tuple of (penalty, holding)"""
-        if self.Firm['Trader'] == 0:
-            return 0, 0
-
         carbon = self.CarbonTrade
         energy = self.Energy
         total_emission = sum(list(energy['Emission'].values()))
@@ -942,15 +937,16 @@ if __name__ != '__main__':
 
     # - clear statements
     for idx, s in book.pool.items():
-        if idx == 'buyer':
-            buyer.clear(Statement(**s))
-        else:
-            seller.clear(Statement(**s))
+        statement = Statement(**s)
+        buyer.clear(statement)
+        seller.clear(statement)
 
     # test policy module (a yearly clear)
-    firm = RegulatedFirm(clock)
-    policy = Policy(Firm=firm, Energy=energy, CarbonTrade=buyer, **config['Policy'])
+    policy = Policy(Energy=energy, CarbonTrade=buyer, **config['Policy'])
     policy.forward()
+
+    firm = RegulatedFirm(clock, Energy=energy, CarbonTrade=buyer, Production=production,
+                         Abatement=abate)
 
     # update the `AnnualPosition` attribute of CarbonTrade
     buyer.update_annual_position(policy.Holding)
