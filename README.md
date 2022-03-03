@@ -44,3 +44,4 @@ The project gradually develops the following features to make the system extensi
 
 ## Contributors:
 - Yi Wu, Bartlett School of Sustainable Construction UCL, wymario@163.com (personal)
+- Jiaqi Chen, SJTU
