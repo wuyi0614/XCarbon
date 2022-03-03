@@ -5,21 +5,22 @@
 import copy
 import time
 import json
-import pandas as pd
 
 from uuid import uuid1
 from hashlib import md5
 from pathlib import Path
 from copy import deepcopy
+from datetime import datetime, timedelta
+from multiprocessing import Pool
+from collections import defaultdict
+
+import pandas as pd
 
 from tqdm import tqdm
 from loguru import logger
-from datetime import datetime, timedelta
-from multiprocessing import Pool
-
+from pydantic import BaseModel
 from timeit import default_timer as timer
 from dateparser import parse as parse_date
-
 from sklearn.utils import shuffle
 
 # generalised environmental variables
@@ -208,6 +209,9 @@ class Clock:
     def _get(self, frequency):
         return self.Date.strftime(DATE_FORMATS[frequency])
 
+    def timestamp(self):
+        return self._get('second')
+
     def today(self):
         return self._get('day')
 
@@ -319,6 +323,117 @@ def init_logger(name, out_dir=None, level='INFO'):
     out_name = out_dir / name
     logger.add(out_name.with_suffix(".log"), format="{time} {level} {message}", level=level)
     return logger
+
+
+class BaseComponent(BaseModel):
+    """The base component for Energy, Abatement, Policy, ..."""
+
+    industry: str = 'unknown'  # firm's industry
+    uid: str = 'unknown'  # firm's unique id
+    cache: defaultdict = defaultdict(list)
+    frequency: str = 'month'  # it determines how many caches will be created
+    added: list = []  # added instance names
+    step: int = 0  # initial step is 0
+    external: list = []  # instance attributes inherited externally
+
+    def __init__(self, **config):
+        """Initiate a BaseComponent for Firm's use. There are a few customized procedures to do:
+
+        functions:
+            - validate: input `names` for validation of invalid configs
+            - forward: step down the component
+        """
+        super().__init__(**config)
+        self.validate(*self.external)
+
+    def __repr__(self):
+        snap = self.snapshot()
+        name = self.__class__.__name__
+        return f"""Component [{name}] of Firm [{self.uid}] at step={self.step} with status: 
+        {list(snap.items())}"""
+
+    def __getitem__(self, item):
+        return self.__getattribute__(item)
+
+    @staticmethod
+    def _reset(obj):
+        if isinstance(obj, list):
+            return []
+        elif isinstance(obj, dict):
+            return {}
+        elif isinstance(obj, (float, int)):
+            return 0
+        else:
+            return None
+
+    def snapshot(self):
+        """Take a snapshot of attributes"""
+        return snapshot(self, skip=['Config'] + self.external)
+
+    def _run(self, **kwargs):
+        """The function to update the instance by running the `get_<func>` functions"""
+        pass
+
+    def _cache(self):
+        # make caches by steps
+        skip = ['Config'] + self.external
+        for k in dir(self):
+            if k not in skip and not k.islower():  # attributes for cache are capitalized
+                self.cache[k] += [copy.deepcopy(self.__getattribute__(k))]
+
+            if self.step > 0:
+                self.__setattr__(k, self._reset(self.__getattribute__(k)))
+
+    def to_json(self, path=None):
+        """Convert attributes into a JSON file"""
+        snap = self.snapshot()
+        if path:
+            Path(path).write_text(json.dumps(snap))
+
+        return snap
+
+    def from_json(self, path_or_data=None):
+        """Load the configuration from a JSON file"""
+        if isinstance(path_or_data, dict):
+            return self.__init__(**path_or_data)
+
+        elif isinstance(path_or_data, (Path, str)):
+            config = read_config(Path(path_or_data))
+            return self.__init__(**config)
+
+        else:
+            return self
+
+    def add(self, *objs):
+        """Add up instances and record their names"""
+        for obj in objs:  # each obj is a BaseComponent
+            name = obj.__class__.__name__
+            self.__setattr__(name.lower(), obj)
+            self.added += [name.lower()]
+
+    def fit(self, **kwargs):
+        """Fit the object on a set of parameters (consistent with its attributes)"""
+        for k, v in kwargs.items():
+            if k in dir(self):
+                self.__setattr__(k, v)
+
+    def validate(self, *args):
+        """Validate objects if they are not empty"""
+        # `False if x else True` means only return those empty ones
+        kwargs = {arg: self.__getattribute__(arg) for arg in args}
+        validated = list(filter(lambda x: False if x[1] else True, kwargs.items()))
+        assert not validated, f'ConfigError: {validated}'
+
+    def forward(self, **kwargs):
+        """Take the next step and make caches for all the inputs. `kwargs` will be passed
+        down to all the functions"""
+        if self.uid == 'unknown':
+            logger.warning(f'UID not properly setup and remain {self.uid}')
+
+        self._run(**kwargs)
+        self._cache()
+        self.step += 1
+        return self
 
 
 if __name__ == "__main__":

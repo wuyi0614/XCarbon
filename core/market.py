@@ -213,7 +213,7 @@ class Order(BaseModel):
         self.status = "waiting"
         self.offeree_id = ""
 
-    def settle(self, transaction) -> tuple:
+    def settle(self, transaction, ts=None) -> tuple:
         """Make settlement from offeree's proposed transaction (Order instance)
 
         :param transaction: the Order instance with an opposite mode (buy -> sell / sell -> buy)
@@ -224,6 +224,7 @@ class Order(BaseModel):
                    self.mode == "sell" and transaction.mode == "buy" and transaction.price >= self.price)
 
         if any(success):
+            ts = ts if ts else self.timestamp()
             # settlement price is the mean value of the two orders
             settle_price = mean([transaction.price, self.price], digits=self.digits)
             # settlement quantity depends on transaction direction
@@ -281,8 +282,9 @@ class OrderBook:
     :param book      : the OrderDict object for the storage of orders (default in order)
     """
 
-    def __init__(self, frequency=None, book=None, **kwargs):
+    def __init__(self, clock, frequency=None, book=None, **kwargs):
         self.empty = True
+        self.clock = clock
         self.frequency = "1D" if frequency is None else frequency
 
         # if given a book in pd.DataFrame, transform by pandas twice,
@@ -359,6 +361,9 @@ class OrderBook:
 
     def put(self, item: Order):
         """Put order items like a Queue in the sorted way"""
+        if item is None:  # take and skip the NoneType item
+            return self
+
         self.empty = False
         # every order will be executed and compared to the Order Book
         if item.mode == "sell":
@@ -376,7 +381,7 @@ class OrderBook:
 
         for id_ in selected["id"].values:
             # the process should be continuous if the first order cannot fulfill the request
-            state, offerer, offeree = Order(**self.book[id_]).settle(item)
+            state, offerer, offeree = Order(**self.book[id_]).settle(item, ts=self.clock.timestamp())
             # check if `state` is None
             if state:
                 # update offerer's side
@@ -613,11 +618,6 @@ class CarbonMarket(BaseMarket):
 
 
 # FUNCTIONS
-def market_report(market:CarbonMarket):
-    pass
-
-
-
 def bundle_bar_data(last_bar: Bar, iter_orders: pd.DataFrame, frequency) -> Bar:
     """
     Convert a set of ticks into a bundled Bar data within a upper date boundary
@@ -667,5 +667,5 @@ if __name__ == "__main__":
 
     # Test: market function
     market = CarbonMarket(ob=ob, clock=clock, freq='day')
-    market.open
+    market.open()
     market.close()

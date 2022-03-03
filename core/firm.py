@@ -10,11 +10,9 @@ Specify firm-like agents given theories from economics
 from copy import deepcopy
 from random import sample
 
-from core.base import snapshot, generate_id, init_logger, jsonify_config_without_desc, read_config, Clock
-from core.stats import mean, logistic_prob, range_prob, get_rand_vector
-from core.market import Order, OrderBook, Statement
+from core.base import generate_id, init_logger, read_config, Clock, BaseComponent
+from core.stats import get_rand_vector
 from core.config import get_energy_input_proportion, FOSSIL_ENERGY_TYPES, ENERGY_BASELINE_FACTORS
-from core.component import BaseComponent
 
 # env vars
 logger = init_logger('Firm')
@@ -203,7 +201,15 @@ class RegulatedFirm(BaseFirm):
 
     compliance = 0  # 1=compliance trader; 0=non-compliance trader
     Trader: int = 1  # 1=trader, 0=quitter
-    external: list = []
+
+    # the objects here are callable instances
+    external: list = ['Energy', 'CarbonTrade', 'Production', 'Abatement', 'Policy', 'Finance']
+    Energy: object = None
+    CarbonTrade: object = None
+    Production: object = None
+    Abatement: object = None
+    Policy: object = None
+    Finance: object = None
 
     # orders/statements from carbon trade
     Orders: list = []
@@ -225,6 +231,9 @@ class RegulatedFirm(BaseFirm):
         # (1)
 
         return self
+
+    def clear_day(self, statement, **kwargs):
+        self.CarbonTrade.clear(statement)
 
 
 
@@ -257,10 +266,9 @@ class EngagedFirm(BaseFirm):
         return abate, cost
 
 
-
-
 if __name__ == '__main__':
     from core.base import Clock
+    from core.market import OrderBook
 
     clock = Clock('2021-01-01')
 

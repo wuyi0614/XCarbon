@@ -6,18 +6,15 @@
 # Created at 01/02/2022.
 #
 
-import json
 import copy
-from pathlib import Path
-from collections import defaultdict
 
 import numpy as np
 from scipy.optimize import minimize
+from collections import defaultdict
 
 from tqdm import tqdm
-from pydantic import BaseModel
 
-from core.base import init_logger, snapshot, jsonify_config_without_desc, read_config
+from core.base import init_logger, jsonify_config_without_desc, read_config, BaseComponent
 from core.stats import random_distribution, get_rand_vector, range_prob, logistic_prob, mean, \
     choice_prob
 
@@ -25,117 +22,6 @@ from core.market import Order, Statement
 
 # create a logger
 logger = init_logger('energy', level='WARNING')
-
-
-class BaseComponent(BaseModel):
-    """The base component for Energy, Abatement, Policy, ..."""
-
-    industry: str = 'unknown'  # firm's industry
-    uid: str = 'unknown'  # firm's unique id
-    cache: defaultdict = defaultdict(list)
-    frequency: str = 'month'  # it determines how many caches will be created
-    added: list = []  # added instance names
-    step: int = 0  # initial step is 0
-    external: list = []  # instance attributes inherited externally
-
-    def __init__(self, **config):
-        """Initiate a BaseComponent for Firm's use. There are a few customized procedures to do:
-
-        functions:
-            - validate: input `names` for validation of invalid configs
-            - forward: step down the component
-        """
-        super().__init__(**config)
-        self.validate(*self.external)
-
-    def __repr__(self):
-        snap = self.snapshot()
-        name = self.__class__.__name__
-        return f"""Component [{name}] of Firm [{self.uid}] at step={self.step} with status: 
-        {list(snap.items())}"""
-
-    def __getitem__(self, item):
-        return self.__getattribute__(item)
-
-    @staticmethod
-    def _reset(obj):
-        if isinstance(obj, list):
-            return []
-        elif isinstance(obj, dict):
-            return {}
-        elif isinstance(obj, (float, int)):
-            return 0
-        else:
-            return None
-
-    def snapshot(self):
-        """Take a snapshot of attributes"""
-        return snapshot(self, skip=['Config'] + self.external)
-
-    def _run(self, **kwargs):
-        """The function to update the instance by running the `get_<func>` functions"""
-        pass
-
-    def _cache(self):
-        # make caches by steps
-        skip = ['Config'] + self.external
-        for k in dir(self):
-            if k not in skip and not k.islower():  # attributes for cache are capitalized
-                self.cache[k] += [copy.deepcopy(self.__getattribute__(k))]
-
-            if self.step > 0:
-                self.__setattr__(k, self._reset(self.__getattribute__(k)))
-
-    def to_json(self, path=None):
-        """Convert attributes into a JSON file"""
-        snap = self.snapshot()
-        if path:
-            Path(path).write_text(json.dumps(snap))
-
-        return snap
-
-    def from_json(self, path_or_data=None):
-        """Load the configuration from a JSON file"""
-        if isinstance(path_or_data, dict):
-            return self.__init__(**path_or_data)
-
-        elif isinstance(path_or_data, (Path, str)):
-            config = read_config(Path(path_or_data))
-            return self.__init__(**config)
-
-        else:
-            return self
-
-    def add(self, *objs):
-        """Add up instances and record their names"""
-        for obj in objs:  # each obj is a BaseComponent
-            name = obj.__class__.__name__
-            self.__setattr__(name.lower(), obj)
-            self.added += [name.lower()]
-
-    def fit(self, **kwargs):
-        """Fit the object on a set of parameters (consistent with its attributes)"""
-        for k, v in kwargs.items():
-            if k in dir(self):
-                self.__setattr__(k, v)
-
-    def validate(self, *args):
-        """Validate objects if they are not empty"""
-        # `False if x else True` means only return those empty ones
-        kwargs = {arg: self.__getattribute__(arg) for arg in args}
-        validated = list(filter(lambda x: False if x[1] else True, kwargs.items()))
-        assert not validated, f'ConfigError: {validated}'
-
-    def forward(self, **kwargs):
-        """Take the next step and make caches for all the inputs. `kwargs` will be passed
-        down to all the functions"""
-        if self.uid == 'unknown':
-            logger.warning(f'UID not properly setup and remain {self.uid}')
-
-        self._run(**kwargs)
-        self._cache()
-        self.step += 1
-        return self
 
 
 # instance management
@@ -594,7 +480,7 @@ class CarbonTrade(BaseComponent):
 
         comp_month = (total_position - noncomp_month) / (12 - ex_months)
         position[(past + ex_months): compliance_month] = comp_month
-        return {idx: position[idx - 1] for idx in range(1, 13, 1)}
+        return {idx: round(position[idx - 1], 3) for idx in range(1, 13, 1)}
 
     def non_compliance_allocator(self) -> dict:
         """Allocator returns a non-compliance like series of trading allowances,
@@ -606,7 +492,7 @@ class CarbonTrade(BaseComponent):
         position[:past] = 0  # set 0 for the past months
 
         position[past:] = total_position / (12 - self.clock.Month)
-        return {idx: position[idx - 1] for idx in range(1, 13, 1)}
+        return {idx: round(position[idx - 1], 3) for idx in range(1, 13, 1)}
 
     def update_annual_position(self, position: float):
         """Update monthly/daily position by passing a new AnnualPosition (before .reset())"""
@@ -650,8 +536,8 @@ class CarbonTrade(BaseComponent):
                 position_ = max([position, price_drive_position, qty_drive_position])
 
             # update the trade position
-            self.MonthPosition[self.clock.Month] = position_
-            self.AnnualPosition = sum(list(self.MonthPosition.values()))
+            self.MonthPosition[self.clock.Month] = round(position_, 3)
+            self.AnnualPosition = round(sum(list(self.MonthPosition.values())), 3)
 
         # run `allocation` only after the reaction of firms to the market
         if self.ComplianceTrader:
@@ -663,7 +549,7 @@ class CarbonTrade(BaseComponent):
         self.MonthPosition = position
         # update daily position for trading
         day_position = self.get_position('month') / self.clock.workdays_left()
-        self.fit(DayPosition=day_position)
+        self.fit(DayPosition=round(day_position, 3))
 
     def get_position(self, frequency='month'):
         """Get the current trade position (this month) or the day"""
@@ -723,11 +609,13 @@ class CarbonTrade(BaseComponent):
 
         # TODO: apply a better strategy to update firm's expected carbon price
         #       还有一种策略是，将orderbook中的订单序列和企业的预期关联起来，实时更新
+        #       注意! 还有一种大宗协议交易的方式，一次性卖出或买入10万吨以上配额
         # agent trades on a daily basis, and it should be divided into even shares
         order = Order(price=exp_price * pr,
                       mode='sell' if position > 0 else 'buy',
                       quantity=self.DayPosition,
-                      offerer_id=self.uid)
+                      offerer_id=self.uid,
+                      ts=self.clock.timestamp())
 
         # firms obtain a random digit to decide if they trade or not
         return order
@@ -739,7 +627,7 @@ class CarbonTrade(BaseComponent):
         # if order position exceeds the monthly position, it will be distributed to the coming months
         quant = statement.quantity
         # update the Trade&Order record
-        self.Trade += quant
+        self.Traded += quant
         self.Order = statement.dict()
 
         # measure cost/revenue from trading
@@ -992,7 +880,7 @@ class Strategy(BaseComponent):
 if __name__ != '__main__':
     from core.base import Clock
     from core.firm import RegulatedFirm
-    from core.market import OrderBook, CarbonMarket
+    from core.market import OrderBook
 
     # Test Pipeline (a loop within a year) by:
     # (1) energy, (2) production, (3) abatement, (4) carbon trade, (5) policy, (6) finance
@@ -1000,53 +888,78 @@ if __name__ != '__main__':
     config = read_config('config/power-firm-20220206.json')
     clock = Clock('2020-01-01')
 
-    firm = RegulatedFirm(clock)
+    # firm = RegulatedFirm(clock)
     # test energy module (a yearly clear)
-    energy = Energy(False, **config['Energy'])
-    energy.forward()
-    assert energy.Allocation <= energy.get_total_emission(), f'Invalid initiation: allocation>=emission'
+    while True:
+        energy = Energy(False, **config['Energy'])
+        energy.forward()
+        if energy.Allocation <= energy.get_total_emission():
+            break
 
     # test carbon module
-    carbon = CarbonTrade(clock=clock, Energy=energy.snapshot(),
-                         Factors=config['Production']['Factors'], **config['CarbonTrade'])
-    carbon.forward()  # a yearly forward (initial)
-    assert sum(list(carbon['MonthPosition'].values())), f'Invalid initiation: {carbon["MonthPosition"]}'
+    buyer = CarbonTrade(clock=clock, Energy=energy.snapshot(), uid='buyer',
+                        Factors=config['Production']['Factors'], **config['CarbonTrade'])
+    buyer.forward()  # a yearly forward (initial)
+    assert sum(list(buyer['MonthPosition'].values())), f'Invalid initiation: {buyer["MonthPosition"]}'
 
     # test production module (a yearly clear)
     production = Production(Energy=energy.snapshot(),
-                            CarbonTradeCache=carbon.cache,
+                            CarbonTradeCache=buyer.cache,
                             **config['Production'])
     production.forward()
 
     # test abatement module (a yearly clear)
     abate_config = read_config('config/power-abate-20220206.json')
     abate = Abatement(Energy=energy.snapshot(),
-                      CarbonTrade=carbon.snapshot(),
+                      CarbonTrade=buyer.snapshot(),
                       Production=production.snapshot(),
                       industry='power', **abate_config)
     abate.forward()
 
     # test daily trading decision and clearance
-    book = OrderBook('day')
-    market = CarbonMarket(book, clock, 'day')
+    # - create a carbon account with excessive allowances
+    while True:
+        e = Energy(False, **config['Energy'])
+        e.forward()
+        if e.Allocation > e.get_total_emission():
+            break
 
-    for _ in range(30):
+    seller = CarbonTrade(clock=clock, Energy=e.snapshot(), uid='seller',
+                         Factors=config['Production']['Factors'], **config['CarbonTrade'])
+    seller.forward()  # a yearly forward (initial)
+
+    book = OrderBook(clock, 'day')
+    buys, sells = [], []
+    for _ in range(5):
         p = get_rand_vector(1, 3, low=0.045, high=0.06).pop()
-        pr = get_rand_vector(1, 2, low=0, high=1).pop()
-        order = carbon.forward_day(p, pr)
+        buy = buyer.forward_day(p, 0)
+        sell = seller.forward_day(p, 0)
+        buys += [buy]
+        sells += [sell]
+        book.put(sell)
+        book.put(buy)
+        clock.move(1)
+
+    # - clear statements
+    for idx, s in book.pool.items():
+        if idx == 'buyer':
+            buyer.clear(Statement(**s))
+        else:
+            seller.clear(Statement(**s))
 
     # test policy module (a yearly clear)
-    policy = Policy(Firm=firm, Energy=energy, CarbonTrade=carbon, **config['Policy'])
+    firm = RegulatedFirm(clock)
+    policy = Policy(Firm=firm, Energy=energy, CarbonTrade=buyer, **config['Policy'])
     policy.forward()
 
     # update the `AnnualPosition` attribute of CarbonTrade
-    carbon.update_annual_position(policy.Holding)
+    buyer.update_annual_position(policy.Holding)
 
     # test finance module
     finance = Finance(Production=production.snapshot(),
                       Energy=energy.snapshot(),
                       Abatement=abate.snapshot(),
-                      CarbonTrade=carbon.snapshot(),
+                      CarbonTrade=buyer.snapshot(),
                       Policy=policy.snapshot(),
                       **config['Finance'])
     finance.forward()
