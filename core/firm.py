@@ -219,21 +219,64 @@ class RegulatedFirm(BaseFirm):
         # set up parameters
         self.fit(**config)
 
-    def _run(self, show=False, **kwargs):
+    def activate(self):
+        """Activate the firm by forwarding its instances"""
+        for obj in self.external:
+            # the first-time forward is activation and account of historic data
+            # NB. CarbonTrade will be executed day by day
+            self.__getattribute__(obj).forward()
+
+    def trade(self, price, prob, show=False):
         """Forward functions to execute actions of agent and do validation in the end.
 
         :param show: configure the display option in the schedule to log firm behaviors
         :param kwargs: additional kwargs passed by `.forward()`"""
-        if self.status and self.step > 1:
+        if not self.status and self.step > 1:
             logger.warning(f'{self.industry} firm: [{self.uid}] deactivated, please run .activate() first')
 
-        # NB. when firm runs, it has the following steps to run:
-        # (1)
+        order = self.CarbonTrade.trade(price, prob)
+        if show:
+            logger.info(f'Firm {self.uid} {order.mode} {order.quantity} permits with {order.price} at step={self.step}')
 
-        return self
+        return order
 
-    def clear_day(self, statement, **kwargs):
+    def daily_clear(self, statement):
+        """Clear actions at a daily basis:
+        CarbonTrade: clear daily transaction
+        """
         self.CarbonTrade.clear(statement)
+
+    def monthly_clear(self, mean_carbon_price):
+        """Clear actions executed at a monthly basis:
+        CarbonTrade: offset position and adjust carbon price by the average market price
+        """
+        self.CarbonTrade.CarbonPrice = mean_carbon_price
+        self.CarbonTrade.forward()
+
+    def yearly_clear(self, prod_price, mat_price, carbon_price):
+        """Clear actions executed at a yearly basis. Backward broadcast the Finance status:
+
+        Scheduler:
+        - ProductPrice
+        - MaterialPrice
+        - CarbonPrice
+
+        Instances:
+        - Finance: pass `Profit` to Production and adjust its production plan
+        - Production:
+        - Energy: adjust `EnergyUse`
+        - Production: adjust Input and Output
+
+        Parameters updated every year in the configuration:
+        - EnergyInput
+        -
+        """
+        # NB. use `forward` will automatically make caches of instances
+        self.Production.fit(ProductPrice=prod_price, MaterialPrice=mat_price,
+                            CarbonTradeCache=self.CarbonTrade.cache)
+        self.Production.forward()
+
+        # pass carbon price back into abatement
 
 
 
@@ -268,8 +311,6 @@ class EngagedFirm(BaseFirm):
 
 if __name__ == '__main__':
     from core.base import Clock
-    from core.market import OrderBook
-
     clock = Clock('2021-01-01')
 
     # Temporary test zone for all the classes and functions
@@ -279,35 +320,3 @@ if __name__ == '__main__':
 
     # Test: create a regulated firm and run single-node test
     conf = read_config('config/power-firm-20211027.json')
-    reg1 = RegulatedFirm(clock, **conf)
-    reg1.activate()
-    order1 = reg1.trade(0)
-    print(order1.dict())
-
-    # Test: execute actions
-    conf2 = randomize_firm_specs(conf)
-    reg2 = RegulatedFirm(clock, **conf2)
-    reg2.activate()
-    order2 = reg2.trade(0)
-    print(order2.dict())
-
-    # Test: order settlement
-    state, offerer, offeree = order1.settle(order2)
-
-    ob = OrderBook(frequency='day')
-    ob.put(order1)
-    ob.put(order2)
-    print(ob.pool)
-
-    # Test: continuous listing & trading (mock a daily market)
-    orders = {}
-    for i in range(20):
-        conf_ = randomize_firm_specs(conf)
-        reg = RegulatedFirm(clock, **conf_)
-        reg.activate()
-        order = reg.trade(0, 0)
-        orders[reg.uid] = order
-        ob.put(order)
-        print(f'{order.mode}: {order.price}')
-
-    # Test: run models on daily basis

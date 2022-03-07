@@ -16,6 +16,10 @@ RENEWABLE_ENERGY_TYPES = ('wind', 'solar', 'biomass', 'thermal')  # TODO: will b
 # source: http://www.tanpaifang.com/tanjiliang/2014/0914/38053.html
 ENERGY_BASELINE_FACTORS = {'coal': 0.1, 'gas': 0.05, 'oil': 0.07, 'electricity': 0.01}
 
+# 能源换算单位
+DEFAULT_GAS_UNIT = 1 / 1.16 * 1e-3  # unit exchange rate for gas from Nm3 to ton: `m3` is `1~1.33t=1Nm3`
+DEFAULT_ELEC_UNIT = 1 / 0.1229 * 1e-3  # exchange rate for electricity from kWh to tone: `0.1229t=1kwh`
+
 # 能源折标煤系数: https://wenku.baidu.com/view/e2d8af92f11dc281e53a580216fc700abb685295.html, unit: tCoal/t
 ENERGY_TO_COAL_MAPPING = {'coal': 0.71, 'gas': 1.25, 'oil': 1.4}
 

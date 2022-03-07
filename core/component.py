@@ -17,7 +17,7 @@ from tqdm import tqdm
 from core.base import init_logger, jsonify_config_without_desc, read_config, BaseComponent
 from core.stats import random_distribution, get_rand_vector, range_prob, logistic_prob, mean, \
     choice_prob
-
+from core.config import DEFAULT_ELEC_UNIT, DEFAULT_GAS_UNIT
 from core.market import Order, Statement
 
 # create a logger
@@ -66,12 +66,10 @@ class Manager:
             obj.step()  # usually the final step
 
 
-DEFAULT_GAS_UNIT = 1 / 1.4  # unit exchange rate for gas from Nm3 to ton: `m3` is `1t=1.4Nm3`
-DEFAULT_ELEC_UNIT = 1000 * 1000 / 320
-
-
 class Energy(BaseComponent):
     """The Energy object for an industrial firm with featured attributes"""
+
+    role: str = None  # `buyer`, `seller`, or None
 
     EnergyType: list = []
     EnergyUse: float = 0  # a float/int type aggregate energy consumption (unit: tonne)
@@ -96,9 +94,14 @@ class Energy(BaseComponent):
     SynEnergyPrice: float = 0.0  # run `get_synthetic_price`
     EnergyCost: float = 0
 
-    def __init__(self, random=False, **config):
-        """Create an Energy object in random or not mode"""
-        super().__init__(**config)
+    def __init__(self, random=False, role=None, **config):
+        """Create an Energy object in random or not mode
+
+        :param random: True for randomizing the input weight, False for not
+        :param role: `buyer` for emission>allocation, `seller` for emission<allocation, None for random
+        :param config: initial configuration params for Energy module
+        """
+        super().__init__(role=role, **config)
         # list all energies
         self.EnergyType = list(self.InputWeight.keys())
 
@@ -108,6 +111,7 @@ class Energy(BaseComponent):
                 self.InputWeight[k] = vector[idx]
 
         # generate the initial emissions of the firm
+        # if role is given, `buyer` or `seller`, adjust the emission
         emission = self.EnergyUse * get_rand_vector(1, 3, 180, 300).pop() / 100
         self.Emission = {k: v * emission for k, v in self.InputWeight.items()}
         self.Allocation = emission
@@ -125,7 +129,14 @@ class Energy(BaseComponent):
         self.EnergyCost = self.get_cost()
         self.SynEnergyPrice = self.get_synthetic_price()
         self.SynEmissionFactor = self.get_synthetic_factor()
-        # self.get_allocation should be called outside the instance
+
+        # according to the role: adjust the emission at the step=0
+        if self.step == 0:
+            gap = self.get_total_emission() - self.Allocation
+            adj = get_rand_vector(1, 3, 200, 300, True).pop() / 100
+            # gap<0 means the firm is a seller
+            if (self.role == 'buyer' and gap < 0) or (self.role == 'seller' and gap > 0):
+                self.Allocation += adj * gap
 
     @staticmethod
     def get_energy(use, weight, gas_unit, elec_unit):
@@ -407,6 +418,7 @@ class CarbonTrade(BaseComponent):
     frequency: str = 'day'
     clock: object = None  # Clock object
     quit: float = 1  # a firm with `position=0` do not trade if `quit=1`
+    order: dict = []  # where historic orders are stored (`Order` object)
 
     # inherited from external instances in the form `dict`
     external: list = ['Energy', 'Factors']
@@ -433,7 +445,6 @@ class CarbonTrade(BaseComponent):
     ComplianceSetting: dict = {}  # compliance setting works only if `ComplianceTrader=1`
 
     Traded: float = 0.0  # traded allowance accounting
-    Order: dict = {}  # where historic orders are stored (dict transformed from `Order` object)
 
     def __init__(self, **config):
         super().__init__(**config)
@@ -446,9 +457,8 @@ class CarbonTrade(BaseComponent):
         self.adjust_position(**kwargs)
         self.get_price(**kwargs)
         # must collect the return result and run `clear` in Firm's context with `Statement` input
-        return self.get_decision(**kwargs)
 
-    def forward_day(self, current_price, prob, dist='linear'):
+    def trade(self, current_price, prob, dist='linear'):
         """Pass in the current carbon price and make a decision if doing bid/ask ..."""
         # self.ExpectCarbonPrice should be updated day by day
         self.CarbonPrice = current_price
@@ -625,20 +635,19 @@ class CarbonTrade(BaseComponent):
         basically daily (not monthly). But `_run()` should be executed by month."""
         position = self.get_position('month')  # generally, traded quantity will not exceed the daily position
         # if order position exceeds the monthly position, it will be distributed to the coming months
-        quant = statement.quantity
+        quant = statement.quantity  # quantity in Statement is always positive
         # update the Trade&Order record
         self.Traded += quant
-        self.Order = statement.dict()
+        self.order += [statement.dict()]
 
         # measure cost/revenue from trading
-        if quant < 0:
+        if position < 0:
             self.TradeCost += quant * statement.price
         else:
             self.TradeRevenue += quant * statement.price
-
-        if position > 0:  # seller (position>0) has negative order quantity
             quant = -quant
 
+        self.QuantLastComplete = quant
         self.MonthPosition[self.clock.Month] = position + quant  # opposite
         self.AnnualPosition += quant
         # adjust month position, day position, leave annual position unchanged
@@ -673,7 +682,7 @@ class Production(BaseComponent):
     MaterialCost: float = 0.0  # material cost
 
     # inherit from the external instances
-    external: list = ['Factors', 'Energy', 'CarbonTradeCache']
+    external: list = ['factors', 'Energy', 'CarbonTradeCache']
     CarbonTradeCache: dict = {}  # get from `CarbonTrade.cache`
     Energy: dict = {}  # get from `Energy.snapshot()`
     Factors: dict = {}  # get from `Production.Factors`
@@ -684,6 +693,10 @@ class Production(BaseComponent):
     def _run(self):
         # `_run()` is not directly called. It will be called in `forward()`.
         self.get_production()
+
+    def forward_year(self):
+        """Use `forward_year` will be more explicit"""
+
 
     @staticmethod
     def _get_energy_input(pi0, rho0, rho1, rho2, alpha1, alpha2):
@@ -727,10 +740,11 @@ class Production(BaseComponent):
 
     def get_production(self):
         """Determine the inputs and outputs of the firm"""
-        factors = self.Factors  # make persistence of variables for quick testing
+        factors = self.factors  # make persistence of variables for quick testing
         prod_price = self.ProductPrice
         material_price = self.MaterialPrice
-        mean_carbon_price = mean(self.CarbonTradeCache['CarbonPrice'], 3) / 1000
+        # TODO: delete /1000 at 2022-03-07 by Yi
+        mean_carbon_price = mean(self.CarbonTradeCache['CarbonPrice'], 3)
 
         syn_energy_price = self.Energy['SynEnergyPrice']
         syn_emission_factor = self.Energy['SynEmissionFactor']
@@ -758,7 +772,7 @@ class Finance(BaseComponent):
     """Finance module accounts firm's cost and revenue"""
 
     # general specification
-    Bankruptcy: bool = False  # if the firm is still eligible
+    AllowBankruptcy: bool = True  # if the firm is still eligible
     Status: int = 1  # 1=running, 0=ending
     VerifyDuration: int = 3  # the maximum duration of failure
 
@@ -795,7 +809,7 @@ class Finance(BaseComponent):
         else:
             verified = False
 
-        if self.Bankruptcy and verified:  # allow firms to bankrupt
+        if self.AllowBankruptcy and verified:  # allow firms to bankrupt
             self.Status = 0  # 0=bankruptcy, 1=running (aligned to Firm.Status)
 
     def get_cost(self):
@@ -885,17 +899,13 @@ if __name__ != '__main__':
 
     # firm = RegulatedFirm(clock)
     # test energy module (a yearly clear)
-    while True:
-        energy = Energy(False, **config['Energy'])
-        energy.forward()
-        if energy.Allocation <= energy.get_total_emission():
-            break
+    energy = Energy(False, role='buyer', **config['Energy'])
+    energy.forward()
 
     # test carbon module
     buyer = CarbonTrade(clock=clock, Energy=energy.snapshot(), uid='buyer',
                         Factors=config['Production']['Factors'], **config['CarbonTrade'])
     buyer.forward()  # a yearly forward (initial)
-    assert sum(list(buyer['MonthPosition'].values())), f'Invalid initiation: {buyer["MonthPosition"]}'
 
     # test production module (a yearly clear)
     production = Production(Energy=energy.snapshot(),
@@ -913,11 +923,8 @@ if __name__ != '__main__':
 
     # test daily trading decision and clearance
     # - create a carbon account with excessive allowances
-    while True:
-        e = Energy(False, **config['Energy'])
-        e.forward()
-        if e.Allocation > e.get_total_emission():
-            break
+    e = Energy(False, role='seller', **config['Energy'])
+    e.forward()
 
     seller = CarbonTrade(clock=clock, Energy=e.snapshot(), uid='seller',
                          Factors=config['Production']['Factors'], **config['CarbonTrade'])
@@ -927,8 +934,8 @@ if __name__ != '__main__':
     buys, sells = [], []
     for _ in range(5):
         p = get_rand_vector(1, 3, low=0.045, high=0.06).pop()
-        buy = buyer.forward_day(p, 0)
-        sell = seller.forward_day(p, 0)
+        buy = buyer.trade(p, 0)
+        sell = seller.trade(p, 0)
         buys += [buy]
         sells += [sell]
         book.put(sell)
@@ -941,15 +948,15 @@ if __name__ != '__main__':
         buyer.clear(statement)
         seller.clear(statement)
 
+    # - test monthly clearance of carbon trade (update mean carbon price) and adjust the trading strategy
+    buyer.CarbonPrice = 0.1  # NB. suddenly rise the price to 100
+    seller.CarbonPrice = 0.1
+    buyer.forward()
+    seller.forward()
+
     # test policy module (a yearly clear)
     policy = Policy(Energy=energy, CarbonTrade=buyer, **config['Policy'])
     policy.forward()
-
-    firm = RegulatedFirm(clock, Energy=energy, CarbonTrade=buyer, Production=production,
-                         Abatement=abate)
-
-    # update the `AnnualPosition` attribute of CarbonTrade
-    buyer.update_annual_position(policy.Holding)
 
     # test finance module
     finance = Finance(Production=production.snapshot(),
@@ -959,3 +966,19 @@ if __name__ != '__main__':
                       Policy=policy.snapshot(),
                       **config['Finance'])
     finance.forward()
+
+    # test firm object initiation
+    firm = RegulatedFirm(clock, Energy=energy, CarbonTrade=buyer, Production=production,
+                         Abatement=abate, Policy=policy, Finance=finance)
+
+    # test firm object in monthly/yearly loops
+    # - monthly clear
+    mean_price = book.to_dataframe().price.mean()
+    firm.monthly_clear(mean_price)
+
+    # - yearly clear
+    # -- test production
+    prod_price, mat_price = 2.5, 0.9
+    production.fit(ProductPrice=prod_price, MaterialPrice=mat_price,
+                   CarbonTradeCache=buyer.cache)
+    production.forward()
