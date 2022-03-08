@@ -14,7 +14,7 @@ from collections import defaultdict
 
 from tqdm import tqdm
 
-from core.base import init_logger, jsonify_config_without_desc, read_config, BaseComponent
+from core.base import init_logger, jsonify_config_without_desc, BaseComponent
 from core.stats import random_distribution, get_rand_vector, range_prob, logistic_prob, mean, \
     choice_prob
 from core.config import DEFAULT_ELEC_UNIT, DEFAULT_GAS_UNIT
@@ -94,6 +94,9 @@ class Energy(BaseComponent):
     SynEnergyPrice: float = 0.0  # run `get_synthetic_price`
     EnergyCost: float = 0
 
+    # attributes that skip cache and reset (unless assigned new values)
+    nocache: list = ['EnergyType', 'InputWeight', 'EmissionFactor']
+
     def __init__(self, random=False, role=None, **config):
         """Create an Energy object in random or not mode
 
@@ -117,40 +120,33 @@ class Energy(BaseComponent):
         self.Allocation = emission
         self._cache()
 
-    def _run(self):
+    def _run(self, **kwargs):
         """Implicitly compute emissions and aggregate inputs by running the function"""
         # NB. for gas, the exchange rate between `tonne` and `m3` is `1t=1.4Nm3`
         self.InputEnergy = self.get_energy(self.EnergyUse,
-                                           self.InputWeight,
-                                           self.gas_unit,
-                                           self.elec_unit)
+                                           self.InputWeight)
         self.Emission = self.get_emission(self.InputEnergy,
                                           self.EmissionFactor)
-        self.EnergyCost = self.get_cost()
+        self.EnergyCost = self.get_cost(self.gas_unit, self.elec_unit)
         self.SynEnergyPrice = self.get_synthetic_price()
         self.SynEmissionFactor = self.get_synthetic_factor()
 
         # according to the role: adjust the emission at the step=0
         if self.step == 0:
             gap = self.get_total_emission() - self.Allocation
-            adj = get_rand_vector(1, 3, 200, 300, True).pop() / 100
+            adj = get_rand_vector(1, 3, 105, 150, True).pop() / 100
             # gap<0 means the firm is a seller
             if (self.role == 'buyer' and gap < 0) or (self.role == 'seller' and gap > 0):
                 self.Allocation += adj * gap
 
     @staticmethod
-    def get_energy(use, weight, gas_unit, elec_unit):
+    def get_energy(use, weight):
         """Compute energy input by types"""
         energy = {}
         if use > 0:
             for k, v in weight.items():
-                if k == 'gas':
-                    input_ = v * use * gas_unit
-                elif k == 'electricity':
-                    input_ = v * use * elec_unit
-                else:
-                    input_ = v * use
-
+                # use `v * use / unit` to convert the unit
+                input_ = v * use
                 energy[k] = round(input_, 3)
 
         else:
@@ -175,11 +171,18 @@ class Energy(BaseComponent):
         last_emission = self.cache['Emission'][-1]
         return sum(list(last_emission.values()))
 
-    def get_cost(self):
+    def get_cost(self, gas_unit, elec_unit):
         """Compute costs of energy consumption"""
         cost = 0
         for k, v in self.InputEnergy.items():
-            cost += round(v * self.EnergyPrice[k], 3)
+            if k == 'gas':
+                input_ = v / gas_unit
+            elif k == 'electricity':
+                input_ = v / elec_unit
+            else:
+                input_ = v
+
+            cost += round(input_ * self.EnergyPrice[k], 3)
 
         return cost
 
@@ -233,7 +236,7 @@ class Abatement(BaseComponent):
     TechniqueType: list = []  # efficiency, ccs, shift (i.e. from coal to gas)
     TotalAbatement: float = 0  # total abatement
     AbateCost: float = 0  # aggregate cost of abatement
-    # TODO: allow suggest position to be negative, then they sell allowances
+
     SuggestPosition: float = 0  # if abatement, SuggestPosition!=Position; otherwise, equal
     Option: dict = {}  # adopted options (if `shift` in it, update Energy instance)
 
@@ -251,13 +254,16 @@ class Abatement(BaseComponent):
     CarbonTrade: dict = {}  # get from `CarbonTrade.snapshot()`
     Production: dict = {}
 
+    nocache: list = ['TechniqueType', 'AbateOption', 'AbateWeight', 'AdoptProb', 'AdoptProbParam']
+
     def __init__(self, **config):
         super().__init__(**jsonify_config_without_desc(config))
         # list all abatement options
         self.TechniqueType = list(self.AbateOption.keys())
 
-    def _run(self):
-        """Execute all `get` functions to update"""
+    def _run(self, **kwargs):
+        """Execute all `get` functions to update.
+        When running this at a yearly basis, plump in `Energy`, `CarbonTrade` and `Production`"""
         options = self.get_abate_options()
         self.update_abate(options)
 
@@ -290,7 +296,7 @@ class Abatement(BaseComponent):
         weights[tar] += change
         weights[org] -= change
         # use new weights to calculate energy use
-        use = Energy.get_energy(energy['EnergyUse'], weights, DEFAULT_GAS_UNIT, DEFAULT_ELEC_UNIT)
+        use = Energy.get_energy(energy['EnergyUse'], weights)
         emission = Energy.get_emission(use, energy['EmissionFactor'])
         # calculate the actual abatement and its cost
         abate = sum(list(energy['Emission'].values())) - sum(list(emission.values()))
@@ -418,12 +424,7 @@ class CarbonTrade(BaseComponent):
     frequency: str = 'day'
     clock: object = None  # Clock object
     quit: float = 1  # a firm with `position=0` do not trade if `quit=1`
-    order: dict = []  # where historic orders are stored (`Order` object)
-
-    # inherited from external instances in the form `dict`
-    external: list = ['Energy', 'Factors']
-    Energy: dict = {}  # get from `Energy.snapshot()`
-    Factors: dict = {}  # get from `Production.Factors`
+    order: list = []  # where historic orders are stored (`Order` object)
 
     # transactions will bring up with costs or revenues
     TradeCost: float = 0.0  # negative for buyer (cost), positive for seller (revenue)
@@ -446,10 +447,16 @@ class CarbonTrade(BaseComponent):
 
     Traded: float = 0.0  # traded allowance accounting
 
+    # inherited from external instances in the form `dict`
+    external: list = ['Energy', 'Factors']
+    Energy: dict = {}  # get from `Energy.snapshot()`
+    Factors: dict = {}  # get from `Production.Factors`
+
+    nocache: list = ['Factors', 'PricePressureRatio', 'QuantPressureRatio',
+                     'ComplianceTrader', 'ComplianceSetting']
+
     def __init__(self, **config):
         super().__init__(**config)
-        # .forward() will be executed at a yearly basis
-        # .forward_day() will
 
     def _run(self, **kwargs):
         """Must be careful about the execution order of functions. The update frequency is `month`.
@@ -457,6 +464,19 @@ class CarbonTrade(BaseComponent):
         self.adjust_position(**kwargs)
         self.get_price(**kwargs)
         # must collect the return result and run `clear` in Firm's context with `Statement` input
+
+    def forward_monthly(self, price):
+        """Monthly update decision with caches (skipping values at a yearly basis)"""
+        # monthly update does not `reset` attributes
+        self.CarbonPrice = price
+        self.adjust_position()
+        self.get_price()
+
+        nocache = ['AnnualPosition', 'MonthPosition', 'DayPosition',
+                   'CarbonPrice', 'ExpectCarbonPrice', 'QuantLastComplete', 'Traded']
+        self._cache(nocache + self.nocache)
+        self.step += 1
+        return self
 
     def trade(self, current_price, prob, dist='linear'):
         """Pass in the current carbon price and make a decision if doing bid/ask ..."""
@@ -639,6 +659,9 @@ class CarbonTrade(BaseComponent):
         # update the Trade&Order record
         self.Traded += quant
         self.order += [statement.dict()]
+        self.cache['CarbonPrice'] += [statement.price]
+        # TODO: for experiment only
+        self.CarbonPrice = statement.price
 
         # measure cost/revenue from trading
         if position < 0:
@@ -669,6 +692,7 @@ class Production(BaseComponent):
     5. Due to the unit of SynEnergyPrice, ProductPrice and MaterialPrice should be around 1~3
     """
     unit: int = 10000  # regulated firms are relatively big enough
+
     # explicit factors
     EnergyInput: float = 0.0  # energy use
     MaterialInput: float = 0.0  # material use
@@ -682,21 +706,19 @@ class Production(BaseComponent):
     MaterialCost: float = 0.0  # material cost
 
     # inherit from the external instances
-    external: list = ['factors', 'Energy', 'CarbonTradeCache']
+    external: list = ['Factors', 'Energy', 'CarbonTradeCache']
     CarbonTradeCache: dict = {}  # get from `CarbonTrade.cache`
     Energy: dict = {}  # get from `Energy.snapshot()`
     Factors: dict = {}  # get from `Production.Factors`
 
+    nocache: list = ['Factors']
+
     def __init__(self, **config):
         super().__init__(**config)
 
-    def _run(self):
+    def _run(self, **kwargs):
         # `_run()` is not directly called. It will be called in `forward()`.
         self.get_production()
-
-    def forward_year(self):
-        """Use `forward_year` will be more explicit"""
-
 
     @staticmethod
     def _get_energy_input(pi0, rho0, rho1, rho2, alpha1, alpha2):
@@ -719,16 +741,19 @@ class Production(BaseComponent):
 
     def _get_inputs(self, syn_energy_price, material_price, mean_carbon_price, factors, syn_emission_factor,
                     pi0: float):
-        # TODO: energy inputs should be reconsidered
+        # TODO: the input function is depreciated because when outputs grows, the inputs shrink.
+        #       energy/material input should increase when output increases.
         # make sure rho0/rho1/rho2 have a bigger value, rho1 and rho2 are relatively fixed values
         rho0 = 1 - 1 / factors['sigma']
 
-        # TODO: more options to get the proper inputs (synthetic factors and prices)
-        rho1 = syn_energy_price - mean_carbon_price * syn_emission_factor
-        rho2 = material_price - mean_carbon_price * syn_emission_factor
+        # TODO: rho1 & rho2 are too important in deciding energy and material inputs
+        #       it's better to constrain the variance at 0.01 level (<|0.1| in total)
+        #       rho1 ++, energy -- ; rho2 ++, energy ++
+        duff_rho1 = syn_energy_price - mean_carbon_price * syn_emission_factor
+        diff_rho2 = material_price - mean_carbon_price * syn_emission_factor
+        rho1 = logistic_prob(0.2, 2, duff_rho1) * 0.7
+        rho2 = logistic_prob(0.2, 0.8, diff_rho2) * 0.97
 
-        rho1 = rho1 if rho1 != 0 else 0.1
-        rho2 = rho2 if rho2 != 0 else 0.1
         # if one of them is negative, sigma should change (make sure rho0 * rho1 or rho0 * rho2 is positive)
         if (rho1 * rho0 * rho2) < 0:
             rho0 = 1 - 1 / (- factors['sigma'])
@@ -740,7 +765,7 @@ class Production(BaseComponent):
 
     def get_production(self):
         """Determine the inputs and outputs of the firm"""
-        factors = self.factors  # make persistence of variables for quick testing
+        factors = self.Factors  # make persistence of variables for quick testing
         prod_price = self.ProductPrice
         material_price = self.MaterialPrice
         # TODO: delete /1000 at 2022-03-07 by Yi
@@ -750,8 +775,9 @@ class Production(BaseComponent):
         syn_emission_factor = self.Energy['SynEmissionFactor']
 
         # NB. the initial output is given by the config but when Step>1, it's decided by product price
-        if self.step > 1:
-            output = factors['alpha0'] * prod_price ** factors['beta0']
+        if self.step > 0:
+            last_output = self.cache['AnnualOutput'][-1]
+            output = last_output * (prod_price-1) ** factors['beta0']
             self.AnnualOutput = round(output, 3)
             self.MonthOutput = round(output / 12, 3)
 
@@ -765,6 +791,7 @@ class Production(BaseComponent):
         self.EnergyInput = ue
         self.MaterialInput = ui
         self.ProductRevenue = self.ProductPrice * self.AnnualOutput
+        self.MaterialCost = ui * self.MaterialPrice
         # TODO: only measure Scope 1&2 emissions regardless of `material use`
 
 
@@ -792,11 +819,13 @@ class Finance(BaseComponent):
     CarbonTrade: dict = {}
     Policy: dict = {}
 
+    nocache: list = ['Status', 'AllowBankruptcy', 'VerifyDuration', 'CostType']
+
     def __init__(self, **config):
         super().__init__(**config)
         # initiate firm's cost and revenue as its historic data
 
-    def _run(self):
+    def _run(self, **kwargs):
         self.get_cost()
         self.get_revenue()
         self.get_profit()
@@ -816,6 +845,7 @@ class Finance(BaseComponent):
         """Get aggregate cost after adding the following costs up:
         EnergyCost, MaterialCost, AbateCost, TradeCost, ComplianceCost. """
         self.Cost = {'EnergyCost': self.Energy['EnergyCost'],
+                     'MaterialCost': self.Production['MaterialCost'],
                      'AbateCost': self.Abatement['AbateCost'],
                      'ComplianceCost': self.Policy['ComplianceCost'],
                      'TradeCost': self.CarbonTrade['TradeCost']}
@@ -847,10 +877,12 @@ class Policy(BaseComponent):
     Energy: dict = {}
     CarbonTrade: dict = {}
 
+    nocache: list = ['PenaltyRate']
+
     def __init__(self, **config):
         super().__init__(**config)
 
-    def _run(self):
+    def _run(self, **kwargs):
         """Execute uncertainty cost on firm"""
         self.ComplianceCost, self.Holding = self.get_compliance()
 
@@ -887,13 +919,12 @@ class Strategy(BaseComponent):
 
 
 if __name__ != '__main__':
-    from core.base import Clock
+    from core.base import Clock, read_config
     from core.firm import RegulatedFirm
     from core.market import OrderBook
 
     # Test Pipeline (a loop within a year) by:
     # (1) energy, (2) production, (3) abatement, (4) carbon trade, (5) policy, (6) finance
-
     config = read_config('config/power-firm-20220206.json')
     clock = Clock('2020-01-01')
 
@@ -903,8 +934,7 @@ if __name__ != '__main__':
     energy.forward()
 
     # test carbon module
-    buyer = CarbonTrade(clock=clock, Energy=energy.snapshot(), uid='buyer',
-                        Factors=config['Production']['Factors'], **config['CarbonTrade'])
+    buyer = CarbonTrade(clock=clock, Energy=energy.snapshot(), uid='buyer', **config['Production'])
     buyer.forward()  # a yearly forward (initial)
 
     # test production module (a yearly clear)
@@ -926,8 +956,7 @@ if __name__ != '__main__':
     e = Energy(False, role='seller', **config['Energy'])
     e.forward()
 
-    seller = CarbonTrade(clock=clock, Energy=e.snapshot(), uid='seller',
-                         Factors=config['Production']['Factors'], **config['CarbonTrade'])
+    seller = CarbonTrade(clock=clock, Energy=e.snapshot(), uid='seller', **config['Production'])
     seller.forward()  # a yearly forward (initial)
 
     book = OrderBook(clock, 'day')
@@ -949,10 +978,9 @@ if __name__ != '__main__':
         seller.clear(statement)
 
     # - test monthly clearance of carbon trade (update mean carbon price) and adjust the trading strategy
-    buyer.CarbonPrice = 0.1  # NB. suddenly rise the price to 100
-    seller.CarbonPrice = 0.1
-    buyer.forward()
-    seller.forward()
+    mean_carbon_price = book.to_dataframe().price.mean()
+    buyer.forward_monthly(mean_carbon_price)
+    seller.forward_monthly(mean_carbon_price)
 
     # test policy module (a yearly clear)
     policy = Policy(Energy=energy, CarbonTrade=buyer, **config['Policy'])
@@ -978,7 +1006,19 @@ if __name__ != '__main__':
 
     # - yearly clear
     # -- test production
-    prod_price, mat_price = 2.5, 0.9
-    production.fit(ProductPrice=prod_price, MaterialPrice=mat_price,
-                   CarbonTradeCache=buyer.cache)
-    production.forward()
+    prod_price, mat_price = 1.9, 0.99
+    production.forward(ProductPrice=prod_price, MaterialPrice=mat_price,
+                       CarbonTradeCache=buyer.cache)
+    # -- test energy: keep it in a dict form
+    energy_price = {'coal': 0.565, 'gas': 0.003, 'oil': 7, 'electricity': 0.0007}
+    energy.forward(EnergyUse=production.EnergyInput, EnergyPrice=energy_price)
+    # -- test carbon trade
+    carbon_price = 0.06
+    buyer.forward(CarbonPrice=carbon_price, Energy=energy)
+    # -- test abatement
+    abate.forward(Energy=energy, CarbonTrade=buyer, Production=production)
+    # -- test policy
+    policy.forward(Energy=energy, CarbonTrade=buyer)
+    # -- test finance
+    finance.forward(Production=production, Energy=energy, Abatement=abate,
+                    CarbonTrade=buyer, Policy=policy)

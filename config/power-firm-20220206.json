@@ -28,18 +28,18 @@
   },
   "Production": {
     "unit": 1000,
-    "EnergyInput": 12000,
-    "MaterialInput": 1600,
+    "EnergyInput": 10000,
+    "MaterialInput": 300,
     "AnnualOutput": 15000,
     "MonthOutput": 3,
     "ProductPrice": 2,
     "ProductRevenue": 30000,
     "MaterialPrice": 1,
     "Factors": {
-      "alpha0": 50,
+      "alpha0": 16000,
       "beta0": -0.2,
       "sigma": -0.8,
-      "_desc1": "alpha0/beta0 are params for demand function between price and output, range: 15~200",
+      "_desc1": "alpha0/beta0(<0) are params for demand function between price and output, range: 15~200",
       "thetai": 1.2,
       "gammai": 0.2,
       "_desc2": "thetai controls the speed of change in carbon price (should not be too big)",
@@ -50,7 +50,10 @@
       "gamma2": 0.6,
       "_desc3": "theta controls the speed of trading explosion",
       "decay": 1,
-      "_desc4": "annual decay rate of allowance allocation in the carbon market"
+      "_desc4": "annual decay rate of allowance allocation in the carbon market",
+      "theta3": 0.2,
+      "gamma3": 0.8,
+      "_desc5": "theta3 & gamma3 are params for logistic prob function in CarbonTrade"
     }
   },
   "CarbonTrade": {

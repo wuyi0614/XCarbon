@@ -334,7 +334,9 @@ class BaseComponent(BaseModel):
     frequency: str = 'month'  # it determines how many caches will be created
     added: list = []  # added instance names
     step: int = 0  # initial step is 0
+
     external: list = []  # instance attributes inherited externally
+    nocache: list = []  # list attributes not used for cache
 
     def __init__(self, **config):
         """Initiate a BaseComponent for Firm's use. There are a few customized procedures to do:
@@ -374,15 +376,15 @@ class BaseComponent(BaseModel):
         """The function to update the instance by running the `get_<func>` functions"""
         pass
 
-    def _cache(self):
+    def _cache(self, nocache=[]):
         # make caches by steps
-        skip = ['Config'] + self.external
+        skip = ['Config'] + self.external + nocache
         for k in dir(self):
             if k not in skip and not k.islower():  # attributes for cache are capitalized
                 self.cache[k] += [copy.deepcopy(self.__getattribute__(k))]
 
-            if self.step > 0:
-                self.__setattr__(k, self._reset(self.__getattribute__(k)))
+                if self.step > 0:
+                    self.__setattr__(k, self._reset(self.__getattribute__(k)))
 
     def to_json(self, path=None):
         """Convert attributes into a JSON file"""
@@ -430,10 +432,12 @@ class BaseComponent(BaseModel):
         if self.uid == 'unknown':
             logger.warning(f'UID not properly setup and remain {self.uid}')
 
+        self.fit(**kwargs)
         self._run(**kwargs)
-        self._cache()
-        self.step += 1
-        return self
+
+        if not kwargs:
+            self._cache()
+            self.step += 1
 
 
 if __name__ == "__main__":

@@ -246,38 +246,59 @@ class RegulatedFirm(BaseFirm):
         """
         self.CarbonTrade.clear(statement)
 
-    def monthly_clear(self, mean_carbon_price):
+    def monthly_clear(self, carbon_price):
         """Clear actions executed at a monthly basis:
         CarbonTrade: offset position and adjust carbon price by the average market price
         """
-        self.CarbonTrade.CarbonPrice = mean_carbon_price
-        self.CarbonTrade.forward()
+        self.CarbonTrade.forward_monthly(carbon_price)
 
-    def yearly_clear(self, prod_price, mat_price, carbon_price):
-        """Clear actions executed at a yearly basis. Backward broadcast the Finance status:
+    def yearly_clear(self, prod_price, mat_price, carbon_price, energy_price):
+        """Price included are updated in Scheduler. The yearly update includes:
 
-        Scheduler:
-        - ProductPrice
-        - MaterialPrice
-        - CarbonPrice
+        Production:
+        - arguments: ProductPrice, MaterialPrice
+        - externals: CarbonTradeCache
 
-        Instances:
-        - Finance: pass `Profit` to Production and adjust its production plan
-        - Production:
-        - Energy: adjust `EnergyUse`
-        - Production: adjust Input and Output
+        Energy:
+        - arguments: EnergyUse, EnergyPrice
+        - externals: None
 
-        Parameters updated every year in the configuration:
-        - EnergyInput
-        -
+        Abatement:
+        - arguments: None (optional AdoptProb, AbateOption, AbateWeight, etc.)
+        - externals: Energy, CarbonTrade, Production
+
+        CarbonTrade:
+        - arguments: None
+        - externals: Energy, (Factors, initiated by Production)
+
+        Policy:
+        - arguments: None
+        - externals: Energy, CarbonTrade
+
+        Finance:
+        - arguments: None
+        - externals: Production, Energy, Abatement, CarbonTrade, Policy
         """
-        # NB. use `forward` will automatically make caches of instances
-        self.Production.fit(ProductPrice=prod_price, MaterialPrice=mat_price,
-                            CarbonTradeCache=self.CarbonTrade.cache)
-        self.Production.forward()
+        # Note: use `forward` will automatically make caches of instances,
+        #       automatic `_cache` and `_reset` will be
+        # update Production instance by:
+        self.Production.forward(ProductPrice=prod_price, MaterialPrice=mat_price,
+                                CarbonTradeCache=self.CarbonTrade.cache)
+        # update energy instance by `EnergyUse` or `EmissionFactor` in the future
+        self.Energy.forward(EnergyUse=self.Production.EnergyInput, EnergyPrice=energy_price)
+        # plump carbon price into Carbon Trade instance
+        self.CarbonTrade.forward(CarbonPrice=carbon_price, Energy=self.Energy)
+        # update Abatement instance
+        self.Abatement.forward(Energy=self.Energy, CarbonTrade=self.CarbonTrade, Production=self.Production)
+        # update Policy instance
+        self.Policy.forward(Energy=self.Energy, CarbonTrade=self.CarbonTrade)
+        # update Finance instance
+        self.Finance.forward(Production=self.Production, Energy=self.Energy, Abatement=self.Abatement,
+                             CarbonTrade=self.CarbonTrade, Policy=self.Policy)
 
-        # pass carbon price back into abatement
-
+        # cache instances in a loop by calling `forward`
+        for attr in self.external:
+            self.__getattribute__(attr).forward()
 
 
 class EngagedFirm(BaseFirm):
@@ -311,6 +332,7 @@ class EngagedFirm(BaseFirm):
 
 if __name__ == '__main__':
     from core.base import Clock
+
     clock = Clock('2021-01-01')
 
     # Temporary test zone for all the classes and functions

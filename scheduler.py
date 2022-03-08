@@ -6,6 +6,7 @@ import pandas as pd
 
 from tqdm import tqdm
 from copy import deepcopy
+from collections import defaultdict
 
 from core.base import init_logger, read_config, Clock, shuffler
 from core.stats import get_rand_vector, logistic_prob, mean
@@ -27,8 +28,13 @@ class Scheduler:
     take: pipe an agent into its pool
     """
 
-    def __init__(self, market: BaseMarket, clock: Clock, freq=None, psize=None, show=False, **kwargs):
-        """"""
+    def __init__(self,
+                 market: BaseMarket,
+                 clock: Clock,
+                 freq=None,
+                 psize=None,
+                 show=False,
+                 **kwargs):
         # general specification
         self.show = show
         self.Frequency = market.Frequency if not freq else freq
@@ -48,10 +54,17 @@ class Scheduler:
         # data monitoring
         self.Data = {'abate': 0, 'output': 0, 'emission': 0, 'allocation': 0}
 
+        # reference data for fitting: configured in the scheduler specification file
+        self.FittingData = {
+            'energy': kwargs.get('energy_data', {}),
+            'product': kwargs.get('product_data', {}),
+            'abatement': kwargs.get('abatement_data', {})
+        }
+
         # status monitoring
-        self.Clock = clock
+        self.clock = clock
         self.is_stop = True
-        self.Step = 0  # loop status record
+        self.step = 0  # loop status record
 
     def __getitem__(self, uid):
         self.Pool.get(uid)
@@ -71,8 +84,6 @@ class Scheduler:
         for item in agents:
             self._take(item)
             self.Size += 1
-
-        return self
 
     # the following functions are tailored for firms
     def daily_clear(self, prob_range=None, **kwargs):
@@ -138,6 +149,8 @@ class Scheduler:
         # firms go through a clear every end of a month, and the steps are:
         # (1) clear the market as usual
         # (2) put carbon price back to agents so that they could make decisions based on that
+        # TODO: enable monthly update of abatement cost and thus carbon price will be anchored in that cost
+
         if not self.Clock.is_monthend():
             return self
 
@@ -150,24 +163,69 @@ class Scheduler:
 
         self.Clock.move(1)
         for _, agent in self.Pool.items():
-            carbon = agent.CarbonPrice
-            agent.CarbonPrice.update({'carbon-price': carbon['carbon-price'] + [month_bar.mean]})
-            agent._action_trade_decision()
-            agent.Step += 1
+            agent.monthly_clear(month_bar.mean)
+            agent.step += 1
 
         logger.info(f'The trading month is ended at {self.Clock.today()}')
         return self
 
     def update_yearly_price(self):
-        """Update market prices for energy, material, product (yearly)"""
+        """Update market prices for energy, material, product (yearly) ...
+        This update must be executed after forwarding all the instances (at least two records in cache).
+
+        Acceptable data inputs from `kwargs` (add more dimensions if there is regional differences):
+        - energy price data: {'2021': {'coal': 0.xxx, 'gas': 0.yyy}, '2022': {...}, ...}
+        - product price data: {'2021': {'power': 0.xxx, 'iron': 0.yyy}, '2022': {...}, ...}
+        - abatement price data: {'2021': {'efficient': 0.xxx, 'shift': 0.yyy}, '2022': {...}, ...}
+        """
+        energies = ['coal', 'gas', 'oil', 'electricity']
+
+        energy_price = self.FittingData['energy']
+        product_price = self.FittingData['product']
+        abate_price = self.FittingData['abatement']
+
+        # aggregate supply/demand values from agents
+        energy_last, energy_now = defaultdict(int), []
+        product_last, product_now = [], []
+        abate_last, abate_now = [], []
+
+        for _, agent in self.Pool.items():
+            # energy: energy price
+            if energy_price:  # directly update the energy price
+                agent.Energy.EnergyPrice = energy_price
+            else:
+                # use np.array to do the calculation
+                energy_now += [list(agent.Energy.InputEnergy.values())]
+                # -1 equals to the current InputEnergy
+                energy_last += [list(agent.Energy.cache['InputEnergy'][-2])]
+
+            # production: product price
+            if product_price:
+                agent.Production.ProductPrice = product_price
+            else:
+                pass
+            # abatement: marginal abatement cost (AbateOption)
+            if abate_price:
+                agent.Abatement
+
         pass
 
     def update_monthly_price(self):
-        """Update market prices for carbon (monthly)"""
+        """Update prices that fluctuate at a monthly basis:
+        carbon price: use S/D adjusted price to replace the average market price.
+        """
+
         pass
 
     def yearly_clear(self):
-        """Clear status of agents once a year"""
+        """ Scheduler's yearly clearance involves the following updates:
+
+        - Production: ProductPrice, MaterialPrice,
+        - Energy: EnergyPrice,
+        - CarbonTrade: CarbonPrice
+        - Abatement: AbateOption (AbatePrice)
+        - ....
+        """
         # adjust product price by comparing aggregate output of last year and this year
         last_output, current_output, price = [], [], []
         # adjust abatement cost by calculating the overall abatement volume
@@ -183,6 +241,7 @@ class Scheduler:
             abate_cost += [agent.Abatement['abate-cost']]
             emission += [agent.Emission['emission-all']]
 
+        # monitor output, emission, abatement, allowance allocation status in the system
         self.Data.update({'abate': sum(abate), 'output': sum(current_output),
                           'emission': sum(emission), 'allocation': sum(allocation)})
         # TODO: update product price (if there are more industries, categorize them by `Tag`)
