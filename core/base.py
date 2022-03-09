@@ -376,14 +376,14 @@ class BaseComponent(BaseModel):
         """The function to update the instance by running the `get_<func>` functions"""
         pass
 
-    def _cache(self, nocache=[]):
+    def _cache(self, nocache=[], reset=[]):
         # make caches by steps
         skip = ['Config'] + self.external + nocache
         for k in dir(self):
             if k not in skip and not k.islower():  # attributes for cache are capitalized
                 self.cache[k] += [copy.deepcopy(self.__getattribute__(k))]
 
-                if self.step > 0:
+                if self.step > 0 and k in reset:
                     self.__setattr__(k, self._reset(self.__getattribute__(k)))
 
     def to_json(self, path=None):
@@ -439,6 +439,7 @@ class BaseComponent(BaseModel):
             self._cache()
             self.step += 1
 
+        return self
 
 if __name__ == "__main__":
     # /// temporary test zone ///

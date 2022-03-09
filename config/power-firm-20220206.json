@@ -6,7 +6,6 @@
     "Trader": 1
   },
   "Energy": {
-    "EnergyUse": 12000,
     "InputWeight": {
       "coal": 0.5,
       "gas": 0.2,
@@ -28,13 +27,14 @@
   },
   "Production": {
     "unit": 1000,
-    "EnergyInput": 10000,
-    "MaterialInput": 300,
     "AnnualOutput": 15000,
-    "MonthOutput": 3,
+    "MonthOutput": 1250,
     "ProductPrice": 2,
     "ProductRevenue": 30000,
     "MaterialPrice": 1,
+    "SynEnergyPrice": 1,
+    "SynEmissionFactor": 1.5,
+    "CarbonPriceCache": [0.051],
     "Factors": {
       "alpha0": 16000,
       "beta0": -0.2,
@@ -53,7 +53,10 @@
       "_desc4": "annual decay rate of allowance allocation in the carbon market",
       "theta3": 0.2,
       "gamma3": 0.8,
-      "_desc5": "theta3 & gamma3 are params for logistic prob function in CarbonTrade"
+      "_desc6": "theta3 & gamma3 are params for logistic prob function in CarbonTrade",
+      "rho1": 0.7,
+      "rho2": 0.97,
+      "_desc7": "rho1 & rho2 controls teh energy/material inputs from production (.get_inputs())"
     }
   },
   "CarbonTrade": {

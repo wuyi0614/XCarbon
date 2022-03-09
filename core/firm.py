@@ -9,8 +9,9 @@ Specify firm-like agents given theories from economics
 
 from copy import deepcopy
 from random import sample
+from typing import Any
 
-from core.base import generate_id, init_logger, read_config, Clock, BaseComponent
+from core.base import generate_id, init_logger, Clock, BaseComponent
 from core.stats import get_rand_vector
 from core.config import get_energy_input_proportion, FOSSIL_ENERGY_TYPES, ENERGY_BASELINE_FACTORS
 
@@ -167,12 +168,12 @@ def non_compliance_allocator(pos: float, clock: Clock, **spec) -> dict:
 
 # classes for firms
 class BaseFirm(BaseComponent):
-    """A base firm has the following attributes and behaviors and it also evolves with the time goes."""
+    """A base firm has the following attributes and behaviors, and it also evolves with the time goes."""
 
     unit: int = 1000
     status: int = 1  # 1=activated, 0=deactivated
-    clock: object = None
-    Attribute: dict = {}
+    clock: object
+    external: list = []
 
     def __init__(self, clock: Clock, **config):
         super().__init__(**config)
@@ -181,6 +182,14 @@ class BaseFirm(BaseComponent):
         self.unit = 1000  # the unit of economic value
         self.clock = clock
         self.fit(**config)
+
+    def __getitem__(self, item):
+        """Query over all attributes in capital to get the item"""
+        for k in dir(self):
+            if not k.islower():
+                attr = self.__getattribute__(k)
+                if item in dir(attr):
+                    return attr[item]
 
     def forward(self, show=False, **kwargs):
         # make changes to their attributes here and enter the next phrase
@@ -199,32 +208,69 @@ class BaseFirm(BaseComponent):
 class RegulatedFirm(BaseFirm):
     """Regulated industry firms inherited from BaseFirm"""
 
-    compliance = 0  # 1=compliance trader; 0=non-compliance trader
+    compliance: str = 0  # 1=compliance trader; 0=non-compliance trader
+    role: str = ''  # buyer or seller or None
     Trader: int = 1  # 1=trader, 0=quitter
 
-    # the objects here are callable instances
+    # key indicators (from external instances)
+    Profit: float = 0.0
+    Output: float = 0.0
+    EnergyInput: float = 0.0
+    MaterialInput: float = 0.0
+
+    Emission: float = 0.0
+    Allocation: float = 0.0
+    Abate: float = 0.0
+    Traded: float = 0.0
+    Position: float = 0.0
+
+    # the objects here are object instances
     external: list = ['Energy', 'CarbonTrade', 'Production', 'Abatement', 'Policy', 'Finance']
-    Energy: object = None
-    CarbonTrade: object = None
-    Production: object = None
-    Abatement: object = None
-    Policy: object = None
-    Finance: object = None
+    Energy: Any
+    CarbonTrade: Any
+    Production: Any
+    Abatement: Any
+    Policy: Any
+    Finance: Any
 
-    # orders/statements from carbon trade
-    Orders: list = []
+    def __init__(self, clock, **configs):
+        """To initiate the Firm instance, take the following steps:
 
-    def __init__(self, clock, **config):
-        super(RegulatedFirm, self).__init__(clock, **config)
+        1. input Clock
+        2. input external instances: Energy, Production, etc.
+        3. initiate external instances
+
+        :param clock: initiated Clock object
+        :param configs: configurations for instances, abatement, and instances
+        """
+        super(RegulatedFirm, self).__init__(clock, **configs)
         # set up parameters
-        self.fit(**config)
+        self.fit(**configs)
 
-    def activate(self):
-        """Activate the firm by forwarding its instances"""
-        for obj in self.external:
-            # the first-time forward is activation and account of historic data
-            # NB. CarbonTrade will be executed day by day
-            self.__getattribute__(obj).forward()
+        # get obj_configs and abate_configs
+        obj_config = configs['obj_config']
+        abate_config = configs['abate_config']
+        random = configs.get('random', False)
+
+        # initiate external instances
+        self.Production = self.Production(role=self.role, **obj_config['Production']).forward()
+        self.Energy = self.Energy(random, Production=self.Production, **obj_config['Energy']).forward()
+        self.CarbonTrade = self.CarbonTrade(clock=clock,
+                                            Energy=self.Energy.snapshot(),
+                                            **obj_config['Production']).forward()
+        self.Abatement = self.Abatement(Energy=self.Energy.snapshot(),
+                                        CarbonTrade=self.CarbonTrade.snapshot(),
+                                        Production=self.Production.snapshot(),
+                                        industry=self.industry, **abate_config).forward()
+
+        # the following two instances will not be forwarded at this stage
+        self.Policy = self.Policy(Energy=self.Energy, CarbonTrade=self.CarbonTrade, **obj_config['Policy'])
+        self.Finance = self.Finance(Production=self.Production.snapshot(),
+                                    Energy=self.Energy.snapshot(),
+                                    Abatement=self.Abatement.snapshot(),
+                                    CarbonTrade=self.CarbonTrade.snapshot(),
+                                    Policy=self.Policy.snapshot(),
+                                    **obj_config['Finance'])
 
     def trade(self, price, prob, show=False):
         """Forward functions to execute actions of agent and do validation in the end.
@@ -240,20 +286,29 @@ class RegulatedFirm(BaseFirm):
 
         return order
 
-    def daily_clear(self, statement):
-        """Clear actions at a daily basis:
-        CarbonTrade: clear daily transaction
+    def forward_daily(self, statement):
+        """Daily update includes:
+
+        CarbonTrade: clear daily transactions
         """
         self.CarbonTrade.clear(statement)
+        self.Traded = self.CarbonTrade.Traded
 
-    def monthly_clear(self, carbon_price):
-        """Clear actions executed at a monthly basis:
+    def forward_monthly(self, carbon_price):
+        """Monthly update includes:
+
         CarbonTrade: offset position and adjust carbon price by the average market price
         """
         self.CarbonTrade.forward_monthly(carbon_price)
+        self.Position = self.CarbonTrade.AnnualPosition
 
-    def yearly_clear(self, prod_price, mat_price, carbon_price, energy_price):
+    def forward_yearly(self, prod_price, mat_price, energy_price, carbon_price):
         """Price included are updated in Scheduler. The yearly update includes:
+
+        :param prod_price: the latest product price from Scheduler
+        :param mat_price: the latest material price from Scheduler
+        :param energy_price: the updated energy price in a dict form from Scheduler or real-world data
+        :param carbon_price: the latest carbon price from the CarbonMarket (Orderbook)
 
         Production:
         - arguments: ProductPrice, MaterialPrice
@@ -281,64 +336,40 @@ class RegulatedFirm(BaseFirm):
         """
         # Note: use `forward` will automatically make caches of instances,
         #       automatic `_cache` and `_reset` will be
+        # forward the firm and update attributes
+        self.Profit = deepcopy(self.Finance.Profit)
+        self.Output = deepcopy(self.Production.AnnualOutput)
+        self.EnergyInput = deepcopy(self.Production.EnergyInput)
+        self.MaterialInput = deepcopy(self.Production.MaterialInput)
+
+        self.Emission = deepcopy(self.Energy.get_total_emission())
+        self.Allocation = deepcopy(self.Energy.Allocation)
+        self.Abate = deepcopy(self.Abatement.TotalAbatement)
+
         # update Production instance by:
         self.Production.forward(ProductPrice=prod_price, MaterialPrice=mat_price,
                                 CarbonTradeCache=self.CarbonTrade.cache)
         # update energy instance by `EnergyUse` or `EmissionFactor` in the future
         self.Energy.forward(EnergyUse=self.Production.EnergyInput, EnergyPrice=energy_price)
         # plump carbon price into Carbon Trade instance
-        self.CarbonTrade.forward(CarbonPrice=carbon_price, Energy=self.Energy)
+        self.CarbonTrade.forward(CarbonPrice=carbon_price, Energy=self.Energy,
+                                 reset=['Traded', 'TradeCost', 'TradeRevenue'])
         # update Abatement instance
         self.Abatement.forward(Energy=self.Energy, CarbonTrade=self.CarbonTrade, Production=self.Production)
+
         # update Policy instance
         self.Policy.forward(Energy=self.Energy, CarbonTrade=self.CarbonTrade)
         # update Finance instance
         self.Finance.forward(Production=self.Production, Energy=self.Energy, Abatement=self.Abatement,
                              CarbonTrade=self.CarbonTrade, Policy=self.Policy)
 
-        # cache instances in a loop by calling `forward`
+        # update firm's step and forward instance for cache in a loop
         for attr in self.external:
             self.__getattribute__(attr).forward()
 
-
-class EngagedFirm(BaseFirm):
-    """Engaged firms are a bit different from regulated firms because they make emission mitigation plans first,
-    and then calculate their production inputs. Lastly, actual emissions of firms will be computed.
-    It is updated at 29th Jan. 2022 by Yi.
-
-    When inheriting from `RegulatedFirm`, only need limited rewriting, i.e. `__init__()`
-    """
-
-    def __init__(self, **kwargs):
-        # inherit from the target instance
-        super().__init__(clock, **kwargs)
-
-    def _action_abatement(self, avg_abate_cost: float):
-        """
-        The emission mitigation options have two types:
-        1. negative emission technology such as CCUS, carbon sink
-        2. energy saving technology such as energy efficiency improvement
-
-        The return data of this function is the probability of the firm to invest in an
-        emission mitigation plan with actual emission reduction as well as its cost.
-
-        The probability for the firm to make a decision is highly dependent on its industry.
-        """
-        abate, cost = 0, 0
-        #
-
-        return abate, cost
+        self.step += 1
 
 
 if __name__ == '__main__':
-    from core.base import Clock
-
-    clock = Clock('2021-01-01')
-
-    # Temporary test zone for all the classes and functions
-    # Test: Agent test
-    firm1 = BaseFirm(name='f1')
-    firm1.cache()
-
-    # Test: create a regulated firm and run single-node test
-    conf = read_config('config/power-firm-20211027.json')
+    # test of Firm instance was migrated to `component.py`
+    pass
