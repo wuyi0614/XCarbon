@@ -346,7 +346,7 @@ class OrderBook:
 
     def reset(self, **kwargs):
         """Reset the Order Book back to the initial state (pipe orders to recycling object than drop them)"""
-        self.__init__(**kwargs)
+        self.__init__(self.clock, **kwargs)
         return self
 
     def _put_into_book(self, item):
@@ -395,7 +395,7 @@ class OrderBook:
 
                 # record Statements into the Pool and state is mainly determined by `Order` object
                 self._put_into_pool(state)
-                logger.info("process statement: %s" % state.id)
+                logger.warning(f"Statement {state.id} dealed {state.quantity} at {state.price}")
 
         # none settlement is done, put the order into the book system
         self._put_into_book(item)

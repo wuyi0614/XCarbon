@@ -2,15 +2,13 @@
 #
 # Created at 03/11/2021 by Yi Wu, wymario@163.com
 #
-import pandas as pd
 
 from tqdm import tqdm
-from copy import deepcopy
 from collections import defaultdict
 
 from core.base import init_logger, read_config, Clock, shuffler
-from core.stats import get_rand_vector, logistic_prob, mean
-from core.firm import BaseFirm
+from core.stats import get_rand_vector, logistic_prob
+from core.firm import RegulatedFirm
 from core.market import BaseMarket, Statement
 
 # init a logger
@@ -44,10 +42,6 @@ class Scheduler:
         self.Size = 0  # number of agents in the pool
         self.PSize = 1 if not psize else psize  # a future control param for async operation
 
-        # adjustment factors (opt params are given)
-        self.Factors = {'theta2': kwargs.get('theta2', 1.5), 'gamma2': kwargs.get('gamma2', 0.2),
-                        'theta1': kwargs.get('theta1', 2), 'gamma1': kwargs.get('gamma1', 0.2)}
-
         # equip with market
         self.Market = market
 
@@ -58,6 +52,7 @@ class Scheduler:
         self.FittingData = {
             'energy': kwargs.get('energy_data', {}),
             'product': kwargs.get('product_data', {}),
+            'material': kwargs.get('material_data', {}),
             'abatement': kwargs.get('abatement_data', {})
         }
 
@@ -67,22 +62,18 @@ class Scheduler:
         self.step = 0  # loop status record
 
     def __getitem__(self, uid):
-        self.Pool.get(uid)
+        return self.Pool.get(uid)
 
-    def _take(self, agent: BaseFirm):
-        emission = agent.Emission
-        if emission['emission-all'] >= self.Market.Threshold:
-            self.Pool[agent.uid] = agent
-        else:
-            logger.warning(f'Firm {agent.id} emits less than threshold: {self.Market.Threshold}')
-
-        if self.show:
-            logger.info(f'Take firm [{agent.uid}] into the Pool')
+    def __repr__(self):
+        return f"Scheduler with {self.Size} firms at step={self.step}"
 
     def take(self, *agents):
         """Pass agents into the Pool"""
-        for item in agents:
-            self._take(item)
+        for agent in agents:
+            self.Pool[agent.uid] = agent
+            if self.show:
+                logger.info(f'Take firm [{agent.uid}] into the Pool')
+
             self.Size += 1
 
     # the following functions are tailored for firms
@@ -104,7 +95,7 @@ class Scheduler:
         # create order book and launch the market
         market = self.Market
         ob = market.OrderBook
-        clock = self.Clock
+        clock = self.clock
 
         # use clock to mock a real-world time flow
         while not clock.is_monthend():
@@ -120,7 +111,8 @@ class Scheduler:
             prob = get_rand_vector(1, low=prob_range[0], high=prob_range[1]).pop()
             market.open()
 
-            # order book should be cleared every end of day
+            # TODO: allow firms to trade once a day or unlimited trading depending on the
+            #       time steps
             pool = self.Pool
             for _, agent in pool.items():
                 if not market.to_dataframe().empty:
@@ -129,7 +121,7 @@ class Scheduler:
                 else:
                     mean_ = None
 
-                item = agent.trade(prob, mean_)
+                item = agent.trade(mean_, prob)
                 if item:
                     ob.put(item)
 
@@ -137,11 +129,11 @@ class Scheduler:
             for _, state in ob.pool.items():
                 state = Statement(**state)
                 orid, oeid = state.offerer_id, state.offeree_id
-                self.Pool[orid] = self.Pool[orid].clear(state)
-                self.Pool[oeid] = self.Pool[oeid].clear(state)
+                self.Pool[orid] = self.Pool[orid].forward_daily(state)
+                self.Pool[oeid] = self.Pool[oeid].forward_daily(state)
 
             # feed the order book into the market and update the market status
-            market.close(**kwargs)  # ob is internally linked and updated
+            market.close()  # ob is internally linked and updated
             logger.info(f'Carbon Market at Day {clock.today()} ...')
 
     def monthly_clear(self):
@@ -151,71 +143,45 @@ class Scheduler:
         # (2) put carbon price back to agents so that they could make decisions based on that
         # TODO: enable monthly update of abatement cost and thus carbon price will be anchored in that cost
 
-        if not self.Clock.is_monthend():
+        if not self.clock.is_monthend():
             return self
 
         # use market information to give feedback to firms
         month_bar = self.Market.aggregate('month')
         if not month_bar:
-            logger.info(f'The trading month had no transactoin at {self.Clock.today()}')
-            self.Clock.move(1)
+            logger.info(f'The trading month had no transactoin at {self.clock.today()}')
+            self.clock.move(1)
             return self
 
-        self.Clock.move(1)
+        self.clock.move(1)
         for _, agent in self.Pool.items():
-            agent.monthly_clear(month_bar.mean)
+            agent.forward_monthly(month_bar.mean)
             agent.step += 1
 
-        logger.info(f'The trading month is ended at {self.Clock.today()}')
+        logger.info(f'The trading month is ended at {self.clock.today()}')
         return self
 
-    def update_yearly_price(self):
-        """Update market prices for energy, material, product (yearly) ...
-        This update must be executed after forwarding all the instances (at least two records in cache).
+    @staticmethod
+    def prob_pricing(last, now, which=None):
+        """ Adjust prices probabilistically according to their last/current values
 
-        Acceptable data inputs from `kwargs` (add more dimensions if there is regional differences):
-        - energy price data: {'2021': {'coal': 0.xxx, 'gas': 0.yyy}, '2022': {...}, ...}
-        - product price data: {'2021': {'power': 0.xxx, 'iron': 0.yyy}, '2022': {...}, ...}
-        - abatement price data: {'2021': {'efficient': 0.xxx, 'shift': 0.yyy}, '2022': {...}, ...}
+        :param last: values in the last period
+        :param now: values in the current period
+        :param which: which product you want to price, default as None (normal params)
         """
-        energies = ['coal', 'gas', 'oil', 'electricity']
+        # NB: for product/energy prices, there could be shocks in prices but unless it is asked,
+        #     we do not significantly allow them to fluctuate. So they should have a lower theta & gamma
+        #     The core logic here is more supply, lower the price.
+        is_up = last < now  # if the value is increasing, True=yes, False=no
+        r = now / last
+        if which in ['product', 'energy']:  # slow pace
+            param = dict(gamma=0.6, theta=1.2)  # doubling the value brings 5% growth
+        elif which == 'abatement':  # DO NOT be too aggressive before improving it
+            param = dict(gamma=0.6, theta=1.5)  # doubling the value brings 10% growth
+        else:
+            param = dict(gamma=0.8, theta=1.8)  # doubling the value brings 20% growth
 
-        energy_price = self.FittingData['energy']
-        product_price = self.FittingData['product']
-        abate_price = self.FittingData['abatement']
-
-        # aggregate supply/demand values from agents
-        energy_last, energy_now = defaultdict(int), []
-        product_last, product_now = [], []
-        abate_last, abate_now = [], []
-
-        for _, agent in self.Pool.items():
-            # energy: energy price
-            if energy_price:  # directly update the energy price
-                agent.Energy.EnergyPrice = energy_price
-            else:
-                # use np.array to do the calculation
-                energy_now += [list(agent.Energy.InputEnergy.values())]
-                # -1 equals to the current InputEnergy
-                energy_last += [list(agent.Energy.cache['InputEnergy'][-2])]
-
-            # production: product price
-            if product_price:
-                agent.Production.ProductPrice = product_price
-            else:
-                pass
-            # abatement: marginal abatement cost (AbateOption)
-            if abate_price:
-                agent.Abatement
-
-        pass
-
-    def update_monthly_price(self):
-        """Update prices that fluctuate at a monthly basis:
-        carbon price: use S/D adjusted price to replace the average market price.
-        """
-
-        pass
+        return logistic_prob(x=r, **param) if is_up else 1 / logistic_prob(x=r, **param)
 
     def yearly_clear(self):
         """ Scheduler's yearly clearance involves the following updates:
@@ -225,63 +191,110 @@ class Scheduler:
         - CarbonTrade: CarbonPrice
         - Abatement: AbateOption (AbatePrice)
         - ....
-        """
-        # adjust product price by comparing aggregate output of last year and this year
-        last_output, current_output, price = [], [], []
-        # adjust abatement cost by calculating the overall abatement volume
-        allocation, abate, emission = [], [], []
-        abate_cost = []
-        for _, agent in self.Pool.items():
-            last_output += [agent.Output['last-output']]
-            current_output += [agent.Output['annual-output']]
-            price += [agent.Price['product-price']]
 
-            allocation += [agent.Allocation['allocation']]
-            abate += [agent.Abatement['abate']]
-            abate_cost += [agent.Abatement['abate-cost']]
-            emission += [agent.Emission['emission-all']]
+        Acceptable data inputs from `kwargs` (add more dimensions if there is regional differences):
+        - energy price data: {'2021': {'coal': 0.xxx, 'gas': 0.yyy}, '2022': {...}, ...}
+        - material price data: {'2021': xxxx, '2022': yyy ...}
+        - product price data: {'2021': {'power': 0.xxx, 'iron': 0.yyy}, '2022': {...}, ...}
+        - abatement price data: {'2021': {'efficient': 0.xxx, 'shift': 0.yyy}, '2022': {...}, ...}
+        """
+        # statistics
+        stat = defaultdict(list)
+        # product-based information
+        output = defaultdict(list)
+        material = defaultdict(list)
+        # energy-based information
+        energy = defaultdict(list)
+        # abatement information
+        abate = defaultdict(list)
+
+        # TODO: allowance allocation and transactions in the last year could significantly alter
+        #       the expectations of firms on carbon price / trading strategies
+        for _, agent in self.Pool.items():
+            # collect output info
+            output['now'] += [agent.Production.AnnualOutput]
+            output['last'] += [agent.Production.cache['AnnualOutput'][-1]]
+            # collect material info
+            material['now'] += [agent.Production.MaterialInput]
+            material['last'] += [agent.Production.cache['MaterialInput'][-1]]
+            # collect energy info
+            for typ, v in agent.Energy.InputEnergy.items():
+                energy[f'now-{typ}'] += [v]
+                energy[f'last-{typ}'] += [agent.Energy.cache['InputEnergy'][-1][typ]]
+
+            # collect abatement info
+            # TODO: the structure is {'Efficiency': {'abate': ..., 'cost': ...}}.
+            #       In the future, must link the abatement cost with specific energy and technology
+            abate['now'] += [agent.Abatement['TotalAbatement']]
+            abate['last'] += [agent.Abatement.cache['TotalAbatement'][-1]]
+            # collect statistical info
+            stat['profit'] += [agent.Profit]
+            stat['allocation'] += [agent.Allocation]
+            stat['emission'] += [agent.Emission]
+            stat['abatement'] += [agent.Abate]
+            stat['traded'] += [agent.Traded]
+
+        # TODO: support externally-imported data for fitting
+        # according to the value changes, adjust the prices (use the last agent)
+        if 'energy' in self.FittingData:
+            updated_energy_price = self.FittingData['energy']
+        else:
+            energy_price = agent.Energy.EnergyPrice
+            updated_energy_price = {}
+            for etype, price in energy_price.items():
+                prob = self.prob_pricing(sum(energy[f'last-{etype}']), sum(abate[f'now-{etype}']))
+                updated_energy_price[etype] = price * prob
+
+        if 'product' in self.FittingData:
+            product_price = self.FittingData['product']
+        else:
+            product_price = agent.Production.ProductPrice
+            product_price = product_price * self.prob_pricing(sum(output['last']), sum(output['now']))
+
+        if 'material' in self.FittingData:
+            material_price = self.FittingData['material']
+        else:
+            material_price = agent.Production.MaterialPrice
+            material_price = material_price * self.prob_pricing(sum(material['last']), sum(material['now']))
+
+        if 'abatement' in self.FittingData['abatement']:
+            updated_abate_opt = self.FittingData['abatement']
+        else:
+            abate_opt = agent.Abatement.AbateOption
+            prob = self.prob_pricing(sum(abate['last']), sum(abate['now']))
+            updated_abate_opt = {}
+            for tech, sub in abate_opt.items():  # efficiency, shift, negative
+                new_sub = {}
+                for typ, v in sub.items():  # shift/energy/ccs
+                    v['price'] = v['price'] * prob
+                    new_sub[typ] = v
+
+                updated_abate_opt[tech] = new_sub
 
         # monitor output, emission, abatement, allowance allocation status in the system
-        self.Data.update({'abate': sum(abate), 'output': sum(current_output),
-                          'emission': sum(emission), 'allocation': sum(allocation)})
+        data = {k: sum(v) for k, v in stat.items()}
+        self.Data.update(data)
+
         # TODO: update product price (if there are more industries, categorize them by `Tag`)
-        # product price is negatively correlated with output
-        factors = self.Factors
-        updated_price = mean(price) * logistic_prob(theta=factors['theta1'],
-                                                    gamma=factors['gamma1'],
-                                                    x=sum(current_output) - sum(last_output))
-        # abatement cost (more abate, higher cost)
-        # TODO: if it proceeds at element level, it enables to adjust one firm's abate cost
-        gap = sum(allocation) - sum(emission) - sum(abate)
-        updated_cost = [cost * logistic_prob(theta=factors['theta2'], gamma=factors['gamma2'], x=gap) for
-                        cost in abate_cost]
         # update agent's status
         for idx, (_, agent) in enumerate(self.Pool.items()):
-            price = deepcopy(agent.Price['product-price'])
-            agent.Price.update({'product-price': updated_price, 'last-product-price': price})
+            agent.forward_yearly(prod_price=product_price,
+                                 mat_price=material_price,
+                                 energy_price=updated_energy_price,
+                                 abate_option=updated_abate_opt)
 
-            cost = deepcopy(agent.Abatement['abate-cost'])
-            agent.Abatement.update({'abate-cost': updated_cost[idx], 'last-abate-cost': cost})
-
-            # summarize firms' trading revenue
-            deal = pd.DataFrame(agent._Orders['deal'])
-            if deal.empty:
-                revenue = 0
-            else:
-                vol = deal.price.values * deal.quantity.values
-                revenue = vol.sum() if agent.Position['daily-trade-position'] > 0 else - vol.sum()
-
-            rev = deepcopy(agent.Revenue['carbon-revenue'])
-            agent.Revenue.update({'carbon-revenue': revenue, 'last-carbon-revenue': rev})
-            # TODO: fine / production revenues
-
-        logger.info(f'The trading year is ended at {self.Clock.today()}')
+        logger.info(f'The trading year is ended at {self.clock.today()}')
         return self
 
     def _run(self, tag):
-        for uid, agent in tqdm(self.Pool.items(), desc=tag):
+        agents = list(self.Pool.items())
+        for uid, agent in tqdm(agents, desc=tag):
             # agent is internally mapped in memory
             agent.activate()
+            if agent.Energy.get_total_emission() < self.Market.Threshold:
+                self.Pool.pop(uid)
+                self.Size -= 1
+                logger.warning(f'Found firm [{uid}] not reached the threshold.')
 
         return self
 
@@ -293,15 +306,15 @@ class Scheduler:
 
         # returned results are projected agent objects
         # TODO: call `accelerator` is not doable because of pickle limitation
-        self._run(f'Scheduler Step={self.Step}')
+        self._run(f'Scheduler Step={self.step}: ')
 
         # run schedules
         probs = kwargs.get('probs', [0, 1])
         compress = kwargs.get('compress', False)
 
-        while not self.Clock.is_end():
+        while not self.clock.is_end():
             self.daily_clear(prob_range=probs, compress=compress)
-            if self.Clock.is_monthend() and not self.Clock.is_yearend():
+            if self.clock.is_monthend() and not self.clock.is_yearend():
                 self.monthly_clear()
 
         # end of loop (monthly_clear is added for December)
@@ -316,64 +329,4 @@ class Scheduler:
 
 
 if __name__ == '__main__':
-    from core.firm import RegulatedFirm, randomize_firm_specs
-    from core.market import CarbonMarket, OrderBook
-    from core.base import Clock
-    from core.plot import plot_kline, plot_volume, plot_grid
-
-    # Test: daily clear
-    # create objs
-    ck = Clock('2021-07-01')
-    ob = OrderBook('day')
-    cm = CarbonMarket(ob, ck, 'day')
-
-    # create scheduler
-    sch_conf = read_config('config/scheduler-20211027.json')
-    sch = Scheduler(cm, ck, 'day', **sch_conf)
-
-    # create agents
-    conf = read_config('config/power-firm-20211027.json')
-    for i in range(10):
-        conf_ = randomize_firm_specs(conf, 'seller')
-        reg = RegulatedFirm(ck, **conf_)
-        sch.take(reg)
-
-    # activate agents and offer trades
-    sch._run('Scheduler')
-    sch.daily_clear([0.2, 0.6], compress=True)
-
-    # Test: monthly clear
-    sch.monthly_clear()
-    sch.daily_clear([0.3, 0.7], compress=True)
-
-    # Test: the pipeline
-    ck = Clock('2021-01-01')
-    ob = OrderBook('day')
-    cm = CarbonMarket(ob, ck, 'day')
-    sch_conf = read_config('config/scheduler-20211027.json')
-    sch = Scheduler(cm, ck, 'day', **sch_conf)
-
-    # create agents (considering both buyer/seller, compliance/non-compliance traders)
-    conf = read_config('config/power-firm-20211027.json')
-    for i in range(30):  # demo: 100, i<30
-        conf_ = randomize_firm_specs(conf, 'buyer')
-        buyer = RegulatedFirm(ck, Compliance=0, **conf_) if i < 20 else RegulatedFirm(ck, Compliance=1, **conf_)
-        sch.take(buyer)
-
-    for i in range(40):  # demo: 120
-        conf_ = randomize_firm_specs(conf, 'seller')
-        seller = RegulatedFirm(ck, Compliance=0, **conf_) if i < 20 else RegulatedFirm(ck, Compliance=1, **conf_)
-        sch.take(seller)
-
-    sch.run(probs=[0., 1], compress=True)  # demo: [0.2, 0.7]
-
-    mark_report = cm.to_dataframe()
-    array = mark_report[['open', 'close', 'low', 'high']].astype(float).values.tolist()
-    dates = mark_report.ts.values.tolist()
-    # draw kline price chart
-    c1 = plot_kline(array, dates, 'carbon price', 'carbon-market-300')
-
-    # draw bar volume chart
-    volumes = mark_report['volume'].astype(float).values.round(1).tolist()
-    c2 = plot_volume(volumes, dates)
-    plot_grid(c1, c2, 'carbon-market-high', True)
+    pass

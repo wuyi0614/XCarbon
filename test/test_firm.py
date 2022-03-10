@@ -19,14 +19,19 @@ clock = Clock('2020-01-01')
 
 firm = RegulatedFirm(clock=clock,
                      role='buyer',
-                     obj_config=config,
-                     abate_config=abate_config,
+                     FirmConfig=config,
+                     AbateConfig=abate_config,
                      Energy=Energy,
                      CarbonTrade=CarbonTrade,
                      Production=Production,
                      Abatement=Abatement,
                      Policy=Policy,
                      Finance=Finance)
+
+firm.activate()
+
+# test firm's trading
+firm.trade(None, 0.02)
 
 # test monthly forward
 mean_price = 0.55
@@ -44,3 +49,8 @@ for year in range(4):
 
     firm.forward_yearly(prod_price, mat_price, energy_price, carbon_price)
     print(f'Year: {year}, {firm.Allocation - firm.Emission}')
+
+# test firm-level trading
+order = firm.trade(0.06, 0.1)
+assert order, f'InvalidFirmSpecification'
+

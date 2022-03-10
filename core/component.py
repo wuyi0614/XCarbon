@@ -116,8 +116,14 @@ class Energy(BaseComponent):
 
         self.EnergyUse = self.Production['EnergyInput']
         # generate the initial emissions of the firm (historic EnergyUse should be higher)
-        pb = get_rand_vector(1, 3, 100, 120).pop() / 100
-        last_use = self.EnergyUse * pb if self.Production.role == 'seller' else self.EnergyUse / pb
+        pb = get_rand_vector(1, 3, 80, 120).pop() / 100
+        if self.Production.role == 'seller':
+            last_use = self.EnergyUse * get_rand_vector(1, 3, 100, 120).pop() / 100
+        elif self.Production.role == 'buyer':
+            last_use = self.EnergyUse * get_rand_vector(1, 3, 80, 100).pop() / 100
+        else:
+            last_use = self.EnergyUse * get_rand_vector(1, 3, 80, 120).pop() / 100
+
         energy = self.get_energy(last_use, self.InputWeight)
         self.Emission = self.get_emission(energy, self.EmissionFactor)
         self.Allocation = self.get_total_emission()
@@ -271,6 +277,7 @@ class Abatement(BaseComponent):
                 abatement += value['abate']
                 cost += value['cost'].sum()
 
+        # TODO: should persist the structure of abatement options and map them with the price changes
         self.TotalAbatement = round(abatement, 3)
         self.AbateCost = round(cost, 3)
         self.SuggestPosition = round(self.SuggestPosition - abatement, 3)
@@ -353,7 +360,7 @@ class Abatement(BaseComponent):
         it uses optimization function to find the best weight."""
         position = sum(list(self.CarbonTrade['MonthPosition'].values()))
         if position > 0:
-            return {}, {}
+            return {}
         else:
             position = abs(position)
 
@@ -379,7 +386,7 @@ class Abatement(BaseComponent):
                                          np.array(list(abates.values())))
         opt_position = optimum[3]
         # export abatement options
-        options, option_costs = {}, {}
+        options = {}
         for idx, each in enumerate(self.TechniqueType):
             options[each] = {'abate': optimum[idx], 'cost': abate_price * optimum[idx]}
 
@@ -476,7 +483,7 @@ class CarbonTrade(BaseComponent):
     def trade(self, current_price, prob, dist='linear'):
         """Pass in the current carbon price and make a decision if doing bid/ask ..."""
         # self.ExpectCarbonPrice should be updated day by day
-        self.CarbonPrice = current_price
+        self.CarbonPrice = current_price if current_price else self.CarbonPrice
         self.get_price(dist)
         order = self.get_decision(current_price, prob)
         prob_ = range_prob(self.DayPosition, speed=0.05)
@@ -591,7 +598,7 @@ class CarbonTrade(BaseComponent):
         Support `linear` or `logistic` probability distribution."""
         factors = self.Factors
         cur_price = self.CarbonPrice  # actual market price
-        month_position = self.get_position('month')
+        month_position = self.get_position('month')  # the distribution could be from 1 to 1000?
 
         # Sellers are not expecting carbon prices falling, but they do hope it could grow
         # The true logic is, when they hold more, they trade more aggressively
@@ -612,6 +619,7 @@ class CarbonTrade(BaseComponent):
             prob = get_rand_vector(1, low=upper_prob, high=lower_prob).pop()
 
         self.ExpectCarbonPrice = round(cur_price * prob, 6)
+        print(f'Record: {self.ExpectCarbonPrice}')
         return self.ExpectCarbonPrice
 
     def get_decision(self, realtime_price: float = 0.0, prob: float = 0.0, **kwargs):
@@ -659,7 +667,7 @@ class CarbonTrade(BaseComponent):
         self.order += [statement.dict()]
         self.cache['CarbonPrice'] += [statement.price]
         # TODO: for experiment only
-        self.CarbonPrice = statement.price
+        # self.CarbonPrice = statement.price
 
         # measure cost/revenue from trading
         if position < 0:

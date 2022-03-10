@@ -9,8 +9,11 @@ from core.base import init_logger
 logger = init_logger('core-stats')
 
 
-def mean(args, digits=None):
+def mean(args, digits=None, keep_zero=True):
     """Wrapped mean method for a numeric vector"""
+    if not keep_zero:
+        args = [each for each in args if each != 0]
+
     return sum(args) / len(args) if digits is None else round(sum(args) / len(args), digits)
 
 
@@ -100,7 +103,7 @@ def random_distribution(vector, digits=3, var=0.01, mode='linear'):
 
 def logistic_prob(gamma, theta, x):
     """A logistic-like function that returns probabilities"""
-    return 1 + gamma * (1 / (1 + theta ** (-x)) - 0.5)
+    return 1 + gamma * (1 / (1 + np.exp(-theta * x)) - 0.5)
 
 
 def range_prob(x, speed=0.6):

@@ -38,9 +38,9 @@ ENERGY_INPUT_GENERAL = {'coal': 0.25, 'gas': 0.25, 'oil': 0.25, 'electricity': 0
 
 
 # carbon market general settings
-DEFAULT_MARKET_CAP = 20
+DEFAULT_MARKET_CAP = 2e6
 DEFAULT_MARKET_DECAY = 0
-DEFAULT_MARKET_THRESHOLD = 0.068
+DEFAULT_MARKET_THRESHOLD = 68
 
 
 def get_energy_input_proportion(industry):

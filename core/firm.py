@@ -88,9 +88,10 @@ def randomize_firm_specs(specs, role='random', inflation=0.1, random_factors=Fal
     factors.update({'alpha1': alpha1})
 
     # adjust input price
+    scale = 5
     material_price = price['material-price']
-    adj_energy_price = get_rand_vector(1, low=-10, high=10, is_int=True).pop()
-    adj_material_price = get_rand_vector(1, low=-10, high=10, is_int=True).pop()
+    adj_energy_price = get_rand_vector(1, low=-scale, high=scale, is_int=True).pop()
+    adj_material_price = get_rand_vector(1, low=-scale, high=scale, is_int=True).pop()
     material_price += adj_material_price
     price.update({'material-price': material_price})
     # adjust emission factors: change in the same direction
@@ -210,6 +211,7 @@ class RegulatedFirm(BaseFirm):
 
     compliance: str = 0  # 1=compliance trader; 0=non-compliance trader
     role: str = ''  # buyer or seller or None
+    random: bool = False  # True=allow random, False=not random
     Trader: int = 1  # 1=trader, 0=quitter
 
     # key indicators (from external instances)
@@ -223,6 +225,10 @@ class RegulatedFirm(BaseFirm):
     Abate: float = 0.0
     Traded: float = 0.0
     Position: float = 0.0
+
+    # configurations
+    AbateConfig: dict = {}
+    FirmConfig: dict = {}
 
     # the objects here are object instances
     external: list = ['Energy', 'CarbonTrade', 'Production', 'Abatement', 'Policy', 'Finance']
@@ -248,29 +254,42 @@ class RegulatedFirm(BaseFirm):
         self.fit(**configs)
 
         # get obj_configs and abate_configs
-        obj_config = configs['obj_config']
-        abate_config = configs['abate_config']
-        random = configs.get('random', False)
+        self.random = configs.get('random', False)
 
+    def activate(self):
+        """Activate instances by setting them up"""
         # initiate external instances
-        self.Production = self.Production(role=self.role, **obj_config['Production']).forward()
-        self.Energy = self.Energy(random, Production=self.Production, **obj_config['Energy']).forward()
-        self.CarbonTrade = self.CarbonTrade(clock=clock,
+        self.Production = self.Production(uid=self.uid,
+                                          role=self.role,
+                                          **self.FirmConfig['Production']).forward()
+        self.Energy = self.Energy(self.random,
+                                  uid=self.uid,
+                                  Production=self.Production,
+                                  **self.FirmConfig['Energy']).forward()
+        self.CarbonTrade = self.CarbonTrade(uid=self.uid,
+                                            clock=self.clock,
                                             Energy=self.Energy.snapshot(),
-                                            **obj_config['Production']).forward()
-        self.Abatement = self.Abatement(Energy=self.Energy.snapshot(),
+                                            Factors=self.Production.Factors,
+                                            **self.FirmConfig['CarbonTrade']).forward()
+        self.Abatement = self.Abatement(uid=self.uid,
+                                        Energy=self.Energy.snapshot(),
                                         CarbonTrade=self.CarbonTrade.snapshot(),
                                         Production=self.Production.snapshot(),
-                                        industry=self.industry, **abate_config).forward()
+                                        industry=self.industry, **self.AbateConfig).forward()
 
         # the following two instances will not be forwarded at this stage
-        self.Policy = self.Policy(Energy=self.Energy, CarbonTrade=self.CarbonTrade, **obj_config['Policy'])
-        self.Finance = self.Finance(Production=self.Production.snapshot(),
+        self.Policy = self.Policy(uid=self.uid,
+                                  Energy=self.Energy,
+                                  CarbonTrade=self.CarbonTrade,
+                                  **self.FirmConfig['Policy'])
+        self.Finance = self.Finance(uid=self.uid,
+                                    Production=self.Production.snapshot(),
                                     Energy=self.Energy.snapshot(),
                                     Abatement=self.Abatement.snapshot(),
                                     CarbonTrade=self.CarbonTrade.snapshot(),
                                     Policy=self.Policy.snapshot(),
-                                    **obj_config['Finance'])
+                                    **self.FirmConfig['Finance'])
+        return self
 
     def trade(self, price, prob, show=False):
         """Forward functions to execute actions of agent and do validation in the end.
@@ -293,6 +312,7 @@ class RegulatedFirm(BaseFirm):
         """
         self.CarbonTrade.clear(statement)
         self.Traded = self.CarbonTrade.Traded
+        return self
 
     def forward_monthly(self, carbon_price):
         """Monthly update includes:
@@ -301,14 +321,16 @@ class RegulatedFirm(BaseFirm):
         """
         self.CarbonTrade.forward_monthly(carbon_price)
         self.Position = self.CarbonTrade.AnnualPosition
+        return self
 
-    def forward_yearly(self, prod_price, mat_price, energy_price, carbon_price):
+    def forward_yearly(self, prod_price, mat_price, energy_price, carbon_price, abate_option):
         """Price included are updated in Scheduler. The yearly update includes:
 
         :param prod_price: the latest product price from Scheduler
         :param mat_price: the latest material price from Scheduler
         :param energy_price: the updated energy price in a dict form from Scheduler or real-world data
         :param carbon_price: the latest carbon price from the CarbonMarket (Orderbook)
+        :param abate_option: the latest abatement option from Scheduler (see details in xxx-abate-yyy.json)
 
         Production:
         - arguments: ProductPrice, MaterialPrice
@@ -319,7 +341,7 @@ class RegulatedFirm(BaseFirm):
         - externals: None
 
         Abatement:
-        - arguments: None (optional AdoptProb, AbateOption, AbateWeight, etc.)
+        - arguments: AbateOption (optional AdoptProb, AbateWeight, etc.)
         - externals: Energy, CarbonTrade, Production
 
         CarbonTrade:
@@ -355,7 +377,8 @@ class RegulatedFirm(BaseFirm):
         self.CarbonTrade.forward(CarbonPrice=carbon_price, Energy=self.Energy,
                                  reset=['Traded', 'TradeCost', 'TradeRevenue'])
         # update Abatement instance
-        self.Abatement.forward(Energy=self.Energy, CarbonTrade=self.CarbonTrade, Production=self.Production)
+        self.Abatement.forward(Energy=self.Energy, CarbonTrade=self.CarbonTrade, Production=self.Production,
+                               AbateOption=abate_option)
 
         # update Policy instance
         self.Policy.forward(Energy=self.Energy, CarbonTrade=self.CarbonTrade)
@@ -368,6 +391,7 @@ class RegulatedFirm(BaseFirm):
             self.__getattribute__(attr).forward()
 
         self.step += 1
+        return self
 
 
 if __name__ == '__main__':

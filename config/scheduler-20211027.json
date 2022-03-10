@@ -1,8 +1,4 @@
 {
-  "theta2": 1.5,
-  "gamma2": 0.2,
-  "desc0": "params that determines how fast the abatement cost drops",
-  "theta1": 2,
-  "gamma1": 0.2,
-  "_desc1": "params that adjust the product price in the market"
+  "FittingData": {},
+  "_desc": "Support historic/realtime data input in `FittingData`"
 }
