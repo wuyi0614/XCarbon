@@ -50,10 +50,10 @@ class Scheduler:
 
         # reference data for fitting: configured in the scheduler specification file
         self.FittingData = {
-            'energy': kwargs.get('energy_data', {}),
-            'product': kwargs.get('product_data', {}),
-            'material': kwargs.get('material_data', {}),
-            'abatement': kwargs.get('abatement_data', {})
+            # 'energy': kwargs.get('energy_data', {}),
+            # 'product': kwargs.get('product_data', {}),
+            # 'material': kwargs.get('material_data', {}),
+            # 'abatement': kwargs.get('abatement_data', {})
         }
 
         # status monitoring
@@ -61,8 +61,14 @@ class Scheduler:
         self.is_stop = True
         self.step = 0  # loop status record
 
-    def __getitem__(self, uid):
-        return self.Pool.get(uid)
+    def __getitem__(self, uid_or_idx):
+        if isinstance(uid_or_idx, str):
+            return self.Pool.get(uid_or_idx)
+        elif isinstance(uid_or_idx, int):
+            uid = list(self.Pool.keys())[uid_or_idx]
+            return self.Pool.get(uid)
+        else:
+            return
 
     def __repr__(self):
         return f"Scheduler with {self.Size} firms at step={self.step}"
@@ -77,7 +83,7 @@ class Scheduler:
             self.Size += 1
 
     # the following functions are tailored for firms
-    def daily_clear(self, prob_range=None, **kwargs):
+    def daily_clear(self, prob_range=None, show=False, **kwargs):
         """Clear market on a daily basis (trading_days=20)"""
         # TODO: in the future, we may support a calendar execution
         # OrderBook's `ts` should be added with one more day
@@ -132,11 +138,14 @@ class Scheduler:
                 self.Pool[orid] = self.Pool[orid].forward_daily(state)
                 self.Pool[oeid] = self.Pool[oeid].forward_daily(state)
 
+                if show:
+                    logger.info(f'Transaction clear: {orid}>{oeid} at {state.price} with {state.quantity} units.')
+
             # feed the order book into the market and update the market status
             market.close()  # ob is internally linked and updated
             logger.info(f'Carbon Market at Day {clock.today()} ...')
 
-    def monthly_clear(self):
+    def monthly_clear(self, **kwargs):
         """Clear status of agents once a month (use timestamp other than the count)"""
         # firms go through a clear every end of a month, and the steps are:
         # (1) clear the market as usual
@@ -183,7 +192,7 @@ class Scheduler:
 
         return logistic_prob(x=r, **param) if is_up else 1 / logistic_prob(x=r, **param)
 
-    def yearly_clear(self):
+    def yearly_clear(self, **kwargs):
         """ Scheduler's yearly clearance involves the following updates:
 
         - Production: ProductPrice, MaterialPrice,
@@ -234,7 +243,8 @@ class Scheduler:
             stat['abatement'] += [agent.Abate]
             stat['traded'] += [agent.Traded]
 
-        # TODO: support externally-imported data for fitting
+        # TODO: support externally-imported data for fitting but the example codes are incorrect,
+        #       the right way is `self.FittingData['energy'][self.clock.year]`
         # according to the value changes, adjust the prices (use the last agent)
         if 'energy' in self.FittingData:
             updated_energy_price = self.FittingData['energy']
@@ -257,7 +267,7 @@ class Scheduler:
             material_price = agent.Production.MaterialPrice
             material_price = material_price * self.prob_pricing(sum(material['last']), sum(material['now']))
 
-        if 'abatement' in self.FittingData['abatement']:
+        if 'abatement' in self.FittingData:
             updated_abate_opt = self.FittingData['abatement']
         else:
             abate_opt = agent.Abatement.AbateOption
@@ -271,6 +281,11 @@ class Scheduler:
 
                 updated_abate_opt[tech] = new_sub
 
+        if 'carbon' in self.FittingData:
+            carbon_price = self.FittingData['carbon_price']
+        else:
+            carbon_price = round(self.Market.to_dataframe()['mean'].mean(), 6)
+
         # monitor output, emission, abatement, allowance allocation status in the system
         data = {k: sum(v) for k, v in stat.items()}
         self.Data.update(data)
@@ -281,6 +296,7 @@ class Scheduler:
             agent.forward_yearly(prod_price=product_price,
                                  mat_price=material_price,
                                  energy_price=updated_energy_price,
+                                 carbon_price=carbon_price,
                                  abate_option=updated_abate_opt)
 
         logger.info(f'The trading year is ended at {self.clock.today()}')
@@ -310,16 +326,15 @@ class Scheduler:
 
         # run schedules
         probs = kwargs.get('probs', [0, 1])
-        compress = kwargs.get('compress', False)
 
         while not self.clock.is_end():
-            self.daily_clear(prob_range=probs, compress=compress)
+            self.daily_clear(prob_range=probs, **kwargs)
             if self.clock.is_monthend() and not self.clock.is_yearend():
-                self.monthly_clear()
+                self.monthly_clear(**kwargs)
 
         # end of loop (monthly_clear is added for December)
-        self.monthly_clear()
-        self.yearly_clear()
+        self.monthly_clear(**kwargs)
+        self.yearly_clear(**kwargs)
         return self
 
     def reset(self, **kwargs):

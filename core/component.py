@@ -116,7 +116,6 @@ class Energy(BaseComponent):
 
         self.EnergyUse = self.Production['EnergyInput']
         # generate the initial emissions of the firm (historic EnergyUse should be higher)
-        pb = get_rand_vector(1, 3, 80, 120).pop() / 100
         if self.Production.role == 'seller':
             last_use = self.EnergyUse * get_rand_vector(1, 3, 100, 120).pop() / 100
         elif self.Production.role == 'buyer':
@@ -184,19 +183,19 @@ class Energy(BaseComponent):
             else:
                 input_ = v
 
-            cost += round(input_ * self.EnergyPrice[k], 3)
+            cost += round(input_ * self.EnergyPrice[k], self.digits)
 
         return cost
 
     def get_synthetic_price(self):
         """Compute the synthetic energy price"""
         syn = np.array(list(self.EnergyPrice.values())) * np.array(list(self.InputWeight.values()))
-        return round(syn.sum(), 3)
+        return round(syn.sum(), self.digits)
 
     def get_synthetic_factor(self):
         """Compute the synthetic emission factor by Emission/EnergyUse"""
         syn = sum(list(self.Emission.values())) / self.EnergyUse
-        return round(syn, 3)
+        return round(syn, self.digits)
 
 
 # local/global functions can be added in Manager's pipe
@@ -278,20 +277,20 @@ class Abatement(BaseComponent):
                 cost += value['cost'].sum()
 
         # TODO: should persist the structure of abatement options and map them with the price changes
-        self.TotalAbatement = round(abatement, 3)
-        self.AbateCost = round(cost, 3)
-        self.SuggestPosition = round(self.SuggestPosition - abatement, 3)
+        self.TotalAbatement = round(abatement, self.digits)
+        self.AbateCost = round(cost, self.digits)
+        self.SuggestPosition = round(self.SuggestPosition - abatement, self.digits)
 
     @staticmethod
-    def get_efficiency_abatement(energy, fuel, potential, price, discount, lifespan, **kwargs):
+    def get_efficiency_abatement(energy, fuel, potential, price, discount, lifespan, digits=6, **kwargs):
         """Return a tuple of discounted abatement (Emission x Potential) and cost (unit: 1000)"""
         abate = energy['Emission'][fuel] * potential
         cost = price * abate
         discounted = cost / (1 + discount) ** lifespan
-        return abate, round(discounted, 3)
+        return abate, round(discounted, digits)
 
     @staticmethod
-    def get_shift_abatement(energy, org, tar, potential, price, discount, lifespan, **kwargs):
+    def get_shift_abatement(energy, org, tar, potential, price, discount, lifespan, digits=6, **kwargs):
         """Return a tuple of discounted abatement and its cost (unit: 1000)"""
         weights = copy.deepcopy(energy['InputWeight'])
         change = weights[org] * potential
@@ -304,15 +303,15 @@ class Abatement(BaseComponent):
         abate = sum(list(energy['Emission'].values())) - sum(list(emission.values()))
         cost = price * abate
         discounted = cost / (1 + discount) ** lifespan
-        return abate, round(discounted, 3)
+        return abate, round(discounted, digits)
 
     @staticmethod
-    def get_negative_abatement(energy, potential, price, discount, lifespan, **kwargs):
+    def get_negative_abatement(energy, potential, price, discount, lifespan, digits=6, **kwargs):
         """Return (discounted abate, cost) of negative technology options"""
         abate = sum(list(energy['Emission'].values())) * potential
         cost = price * abate
         discounted = cost / (1 + discount) ** lifespan
-        return abate, round(discounted, 3)
+        return abate, round(discounted, digits)
 
     @staticmethod
     def get_optimal_abate(w, position, carbon_price, abate_price, maximum, init=None) -> np.ndarray:
@@ -427,6 +426,8 @@ class CarbonTrade(BaseComponent):
     clock: Any  # Clock object
     quit: float = 1  # a firm with `position=0` do not trade if `quit=1`
     order: list = []  # where historic orders are stored (`Order` object)
+    lockable: float = 1  # 1=True, 0=False, if True, allow to lock the firm when its |position|<0.001
+    lock: float = 0  # 1=True, can trade; 0=False, cannot trade; use `Lock` only when lock=1
 
     # transactions will bring up with costs or revenues
     TradeCost: float = 0.0  # negative for buyer (cost), positive for seller (revenue)
@@ -465,14 +466,15 @@ class CarbonTrade(BaseComponent):
         Basically it is: adjust_position > get_price > get_decision"""
         self.adjust_position(**kwargs)
         self.get_price(**kwargs)
-        # must collect the return result and run `clear` in Firm's context with `Statement` input
+        if self.step > 1:
+            self.forward_yearly(**kwargs)
 
-    def forward_monthly(self, price):
+    def forward_monthly(self, price, **kwargs):
         """Monthly update decision with caches (skipping values at a yearly basis)"""
         # monthly update does not `reset` attributes
         self.CarbonPrice = price
-        self.adjust_position()
-        self.get_price()
+        self.adjust_position(**kwargs)
+        self.get_price(**kwargs)
 
         nocache = ['AnnualPosition', 'MonthPosition', 'DayPosition',
                    'CarbonPrice', 'ExpectCarbonPrice', 'QuantLastComplete', 'Traded']
@@ -480,14 +482,13 @@ class CarbonTrade(BaseComponent):
         self.step += 1
         return self
 
-    def trade(self, current_price, prob, dist='linear'):
-        """Pass in the current carbon price and make a decision if doing bid/ask ..."""
-        # self.ExpectCarbonPrice should be updated day by day
-        self.CarbonPrice = current_price if current_price else self.CarbonPrice
-        self.get_price(dist)
-        order = self.get_decision(current_price, prob)
-        prob_ = range_prob(self.DayPosition, speed=0.05)
-        return order if prob_ >= prob else None
+    def forward_yearly(self, **kwargs):
+        """Yearly update decision"""
+        energy = self.Energy
+        position = energy['Allocation'] - sum(list(energy['Emission'].values()))
+        if position != 0:
+            self.AnnualPosition = position
+            self.lock = 0  # set it 0 if position is refreshed
 
     # NB. allocator can be tailored not only for `compliance/non-compliance`
     def compliance_allocator(self) -> dict:
@@ -497,7 +498,7 @@ class CarbonTrade(BaseComponent):
         compliance_ratio = self.ComplianceSetting.get('compliance_ratio', 0.8)
 
         # how many months before the compliance
-        ex_months = compliance_month - compliance_window - self.clock.Month + 1
+        ex_months = compliance_month - compliance_window - self.clock.Month
 
         position = np.zeros(12)
         # sum up the positions before the current month (12 months)
@@ -505,14 +506,18 @@ class CarbonTrade(BaseComponent):
         past = self.clock.Month - 1
         position[:past] = 0  # set 0 for the past months
 
-        # TODO: issue - if compliance month is not Dec, it will be a mistake, and also if compliance month
+        # TODO: issue - if compliance month is not Dec, it causes issues, and also if compliance month
         #       happens in the next year, it will be an error too.
-        noncomp_month = total_position * (1 - compliance_ratio) / ex_months
-        position[past: (past + ex_months)] = noncomp_month
+        if ex_months > 0:
+            noncomp_month = total_position * (1 - compliance_ratio) / ex_months
+            position[past: (past + ex_months)] = noncomp_month
+        else:
+            noncomp_month = 0
 
-        comp_month = (total_position - noncomp_month) / (12 - ex_months)
+        # compliance months are the period within the compliance window
+        comp_month = (total_position - noncomp_month) / compliance_window
         position[(past + ex_months): compliance_month] = comp_month
-        return {idx: round(position[idx - 1], 3) for idx in range(1, 13, 1)}
+        return {idx: round(position[idx - 1], self.digits) for idx in range(1, 13, 1)}
 
     def non_compliance_allocator(self) -> dict:
         """Allocator returns a non-compliance like series of trading allowances,
@@ -523,8 +528,8 @@ class CarbonTrade(BaseComponent):
         past = self.clock.Month - 1
         position[:past] = 0  # set 0 for the past months
 
-        position[past:] = total_position / (12 - self.clock.Month)
-        return {idx: round(position[idx - 1], 3) for idx in range(1, 13, 1)}
+        position[past:] = total_position / (12 - self.clock.Month + 1)
+        return {idx: round(position[idx - 1], self.digits) for idx in range(1, 13, 1)}
 
     def update_annual_position(self, position: float):
         """Update monthly/daily position by passing a new AnnualPosition (before .reset())"""
@@ -536,17 +541,17 @@ class CarbonTrade(BaseComponent):
         # TODO: 大企业比如华能集团（拥有很多的电厂和配额）的交易行为会因为持有配额数量多而发生改变
         # test if it's under pressure either from price or quantity
         if self.step == 0:  # initiation
-            energy = self.Energy
-            position = energy['Allocation'] - sum(list(energy['Emission'].values()))
-            self.AnnualPosition = position
+            self.forward_yearly(**kwargs)
 
         elif self.step > 2:  # only when the trading periods go over 3 months
-            position = self.get_position('month')
+            position = kwargs.get('position', self.get_position('month'))
             price = self.CarbonPrice
             factors = self.Factors
 
             # get price-driven position adjustment
-            mean_price = mean(self.cache['CarbonPrice'][-4: -1])
+            hist_price = self.cache['CarbonPrice'][-4: -1]
+            mean_price = mean(hist_price) if hist_price else 0
+
             # NB: mean price could be 0 only in tests
             mean_price = mean_price if mean_price > 0 else price
 
@@ -570,9 +575,10 @@ class CarbonTrade(BaseComponent):
             else:
                 position_ = max([position, price_drive_position, qty_drive_position])
 
-            # update the trade position
-            self.MonthPosition[self.clock.Month] = round(position_, 3)
-            self.AnnualPosition = round(sum(list(self.MonthPosition.values())), 3)
+            # NB: annual position cannot be easily changed!
+            #     updated position for trading cannot exceed its annual position
+            position_ = min([position_, self.AnnualPosition])
+            self.MonthPosition[self.clock.Month] = round(position_, self.digits)
 
         # run `allocation` only after the reaction of firms to the market
         if self.ComplianceTrader:
@@ -582,9 +588,9 @@ class CarbonTrade(BaseComponent):
             position = self.non_compliance_allocator()
 
         self.MonthPosition = position
-        # update daily position for trading
-        day_position = self.get_position('month') / self.clock.workdays_left()
-        self.fit(DayPosition=round(day_position, 3))
+        # update daily position for trading (the last day is excluded so we plus 1)
+        day_position = self.get_position('month') / (self.clock.workdays_left() + 1)
+        self.fit(DayPosition=round(day_position, self.digits))
 
     def get_position(self, frequency='month'):
         """Get the current trade position (this month) or the day"""
@@ -619,7 +625,6 @@ class CarbonTrade(BaseComponent):
             prob = get_rand_vector(1, low=upper_prob, high=lower_prob).pop()
 
         self.ExpectCarbonPrice = round(cur_price * prob, 6)
-        print(f'Record: {self.ExpectCarbonPrice}')
         return self.ExpectCarbonPrice
 
     def get_decision(self, realtime_price: float = 0.0, prob: float = 0.0, **kwargs):
@@ -639,7 +644,7 @@ class CarbonTrade(BaseComponent):
         realtime_price = exp_price if not realtime_price else realtime_price
 
         # allow a daily pricing variance from firms' side
-        eps = logistic_prob(theta=factors['thetai'], gamma=factors['gammai'], x=(exp_price - realtime_price))
+        eps = logistic_prob(theta=factors['theta4'], gamma=factors['gamma4'], x=(exp_price - realtime_price))
         eps = abs(1 - eps) if abs(1 - eps) <= 0.1 else 0.1
         pr = 1 + get_rand_vector(1, low=-eps, high=eps).pop()  # eq: price +- |eps|
 
@@ -652,9 +657,20 @@ class CarbonTrade(BaseComponent):
                       quantity=self.DayPosition,
                       offerer_id=self.uid,
                       ts=self.clock.timestamp())
-
         # firms obtain a random digit to decide if they trade or not
         return order
+
+    def trade(self, current_price, prob, dist='linear'):
+        """Pass in the current carbon price and make a decision if doing bid/ask ..."""
+        # self.ExpectCarbonPrice should be updated day by day
+        if self.lock:
+            return
+
+        self.CarbonPrice = current_price if current_price else self.CarbonPrice
+        self.get_price(dist)
+        order = self.get_decision(current_price, prob)
+        prob_ = range_prob(self.DayPosition, speed=0.05)
+        return order if prob_ >= prob else None
 
     def clear(self, statement: Statement):
         """Transform an order and offset the position. The frequency of calling `clear` function is
@@ -679,8 +695,19 @@ class CarbonTrade(BaseComponent):
         self.QuantLastComplete = quant
         self.MonthPosition[self.clock.Month] = position + quant  # opposite
         self.AnnualPosition += quant
-        # adjust month position, day position, leave annual position unchanged
-        self.adjust_position()
+
+        month_sum = sum(list(self.MonthPosition.values()))
+        min_pos = min([self.DayPosition, self.AnnualPosition, month_sum])
+        if self.lockable and abs(min_pos) < 0.001:  # 1 tonne
+            self.lock = 1
+            logger.warning(f'Firm [{self.uid}] is locked for trading.')
+
+        if self.DayPosition >= self.AnnualPosition or self.DayPosition > month_sum:
+            self.adjust_position(position=min_pos)
+        else:
+            # adjust month position, day position, leave annual position unchanged
+            self.adjust_position()
+
         return self
 
 
@@ -797,14 +824,14 @@ class Production(BaseComponent):
         factors = self.Factors  # make persistence of variables for quick testing
         prod_price = self.ProductPrice
         material_price = self.MaterialPrice
-        mean_carbon_price = mean(carbon_price_cache, 3)
+        mean_carbon_price = mean(carbon_price_cache, self.digits)
 
         # NB. the initial output is given by the config but when Step>1, it's decided by product price
         if self.step > 0:
             last_output = self.cache['AnnualOutput'][-1]
             output = last_output * (prod_price - 1) ** factors['beta0']
-            self.AnnualOutput = round(output, 3)
-            self.MonthOutput = round(output / 12, 3)
+            self.AnnualOutput = round(output, self.digits)
+            self.MonthOutput = round(output / 12, self.digits)
 
         # infer energy and material input through a CGE function
         ue, ui = self._get_inputs(syn_energy_price,
@@ -874,7 +901,7 @@ class Finance(BaseComponent):
                      'AbateCost': self.Abatement['AbateCost'],
                      'ComplianceCost': self.Policy['ComplianceCost'],
                      'TradeCost': self.CarbonTrade['TradeCost']}
-        self.TotalCost = round(sum(list(self.Cost.values())), 3)
+        self.TotalCost = round(sum(list(self.Cost.values())), self.digits)
         return self.TotalCost
 
     def get_revenue(self):
@@ -882,7 +909,7 @@ class Finance(BaseComponent):
         ProductRevenue, CarbonRevenue """
         self.Revenue = {'ProductRevenue': self.Production['ProductRevenue'],
                         'TradeRevenue': self.CarbonTrade['TradeRevenue']}
-        self.TotalRevenue = round(sum(list(self.Revenue.values())), 3)
+        self.TotalRevenue = round(sum(list(self.Revenue.values())), self.digits)
         return self.TotalRevenue
 
     def get_profit(self):
@@ -924,7 +951,7 @@ class Policy(BaseComponent):
             penalty = 0
         else:  # failed compliance
             # get penalty
-            penalty = round(self.PenaltyRate * (total_emission - holding), 3)
+            penalty = round(self.PenaltyRate * (total_emission - holding), self.digits)
             holding = 0
 
         return penalty, holding

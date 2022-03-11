@@ -72,6 +72,7 @@ class Bar(BaseModel):
     :param volume    : current transaction volume (price * quantities)
     :param ts        : current timestamp
     :param frequency : transaction market frequency: hour, day, month, ...
+    :param digits    : digits of prices/quantities, default as 6
     """
 
     # the following are related prices
@@ -87,6 +88,7 @@ class Bar(BaseModel):
     # ... characteristics
     ts: Optional[str]
     frequency: Optional[str]
+    digits: Optional[int] = 6
 
     @staticmethod
     def timestamp():
@@ -108,7 +110,7 @@ class Bar(BaseModel):
 
         self.open = get_rand_vector(1, low=10, high=40).pop() if open is None else open
         ratio = get_rand_vector(1, low=0.9, high=1.1).pop()
-        self.close = round(ratio * self.open, 3) if close is None else close
+        self.close = round(ratio * self.open, self.digits) if close is None else close
         self.mean = sum([self.open, self.close]) / 2 if mean is None else mean
         self.prev_close = get_rand_vector(1).pop() if prev_close is None else prev_close
         self.high = self.open * 1.1 if high is None else high
@@ -172,7 +174,7 @@ class Order(BaseModel):
     offeree_id: Optional[str] = None
     ts: Optional[str] = None
     id: Optional[str] = None
-    digits: Optional[int] = 3
+    digits: Optional[int] = 6
     status: Optional[str] = "waiting"
 
     @staticmethod
@@ -395,7 +397,7 @@ class OrderBook:
 
                 # record Statements into the Pool and state is mainly determined by `Order` object
                 self._put_into_pool(state)
-                logger.warning(f"Statement {state.id} dealed {state.quantity} at {state.price}")
+                logger.warning(f"Statement {state.id} reached by {state.price} with {state.quantity} units")
 
         # none settlement is done, put the order into the book system
         self._put_into_book(item)

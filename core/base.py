@@ -334,6 +334,7 @@ class BaseComponent(BaseModel):
     frequency: str = 'month'  # it determines how many caches will be created
     added: list = []  # added instance names
     step: int = 0  # initial step is 0
+    digits: int = 6  # digits for numeric values
 
     external: list = []  # instance attributes inherited externally
     nocache: list = []  # list attributes not used for cache

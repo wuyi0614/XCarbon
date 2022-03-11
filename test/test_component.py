@@ -9,7 +9,7 @@ from pathlib import Path
 from core.component import *
 
 from core.base import Clock, read_config
-from core.market import OrderBook
+from core.market import OrderBook, Order
 
 # Test Pipeline (a loop within a year) by:
 root_path = Path('config')

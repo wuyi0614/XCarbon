@@ -28,13 +28,20 @@ def randomize_firm_specs(specs, role='random', inflation=0.1, random_factors=Fal
     :param inflation: firm-level factors will change in the range of [-inflation, inflation] by percents
     :param random_factors: Hardcore randomization that changes the core parameters (dangerous)
 
-    The following parameters and variables will be randomized:
-    - Output
-    - Inputs (energy, material)
-    - Price
-    - EmissionFactor
-    - Factors
-    - Abatement
+    The following parameters and variables will be randomized,
+
+    Production:
+    - AnnualOutput
+    - ProductPrice
+    - MaterialPrice
+
+    Energy:
+    - InputWeight, slightly adjustable
+    - EnergyPrice, slightly adjustable
+
+    CarbonTrade:
+    - ExpectCarbonPrice, slightly adjustable
+    -
 
     The following varaibles will be fixed and shared across different agents:
     - Unit
@@ -231,7 +238,8 @@ class RegulatedFirm(BaseFirm):
     FirmConfig: dict = {}
 
     # the objects here are object instances
-    external: list = ['Energy', 'CarbonTrade', 'Production', 'Abatement', 'Policy', 'Finance']
+    external: list = ['Energy', 'CarbonTrade', 'Production', 'Abatement', 'Policy', 'Finance',
+                      'FirmConfig', 'AbateConfig']
     Energy: Any
     CarbonTrade: Any
     Production: Any
@@ -356,18 +364,6 @@ class RegulatedFirm(BaseFirm):
         - arguments: None
         - externals: Production, Energy, Abatement, CarbonTrade, Policy
         """
-        # Note: use `forward` will automatically make caches of instances,
-        #       automatic `_cache` and `_reset` will be
-        # forward the firm and update attributes
-        self.Profit = deepcopy(self.Finance.Profit)
-        self.Output = deepcopy(self.Production.AnnualOutput)
-        self.EnergyInput = deepcopy(self.Production.EnergyInput)
-        self.MaterialInput = deepcopy(self.Production.MaterialInput)
-
-        self.Emission = deepcopy(self.Energy.get_total_emission())
-        self.Allocation = deepcopy(self.Energy.Allocation)
-        self.Abate = deepcopy(self.Abatement.TotalAbatement)
-
         # update Production instance by:
         self.Production.forward(ProductPrice=prod_price, MaterialPrice=mat_price,
                                 CarbonTradeCache=self.CarbonTrade.cache)
@@ -386,9 +382,21 @@ class RegulatedFirm(BaseFirm):
         self.Finance.forward(Production=self.Production, Energy=self.Energy, Abatement=self.Abatement,
                              CarbonTrade=self.CarbonTrade, Policy=self.Policy)
 
+        # Note: using `forward` WILL NOT automatically make cache/reset of instances,
+        #       because most of the attributes will be automatically refreshed
+        self.Profit = deepcopy(self.Finance.Profit)
+        self.Output = deepcopy(self.Production.AnnualOutput)
+        self.EnergyInput = deepcopy(self.Production.EnergyInput)
+        self.MaterialInput = deepcopy(self.Production.MaterialInput)
+
+        self.Emission = deepcopy(self.Energy.get_total_emission())
+        self.Allocation = deepcopy(self.Energy.Allocation)
+        self.Abate = deepcopy(self.Abatement.TotalAbatement)
+
         # update firm's step and forward instance for cache in a loop
         for attr in self.external:
-            self.__getattribute__(attr).forward()
+            if 'forward' in dir(attr):
+                self.__getattribute__(attr).forward()
 
         self.step += 1
         return self

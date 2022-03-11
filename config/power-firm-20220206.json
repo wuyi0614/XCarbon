@@ -53,16 +53,18 @@
       "_desc4": "annual decay rate of allowance allocation in the carbon market",
       "theta3": 0.2,
       "gamma3": 0.8,
-      "_desc6": "theta3 & gamma3 are params for logistic prob function in CarbonTrade",
+      "_desc6": "theta3 & gamma3 are params for probs from quantity pressure",
+      "theta4": 0.8,
+      "gamma4": 1.5,
+      "_desc7": "theta4 & gamma4 are params for logistic prob from price pressure",
       "rho1": 0.7,
       "rho2": 0.97,
-      "_desc7": "rho1 & rho2 controls teh energy/material inputs from production (.get_inputs())"
+      "_desc8": "rho1 & rho2 controls teh energy/material inputs from production (.get_inputs())"
     }
   },
   "CarbonTrade": {
     "CarbonPrice": 0.051,
     "ExpectCarbonPrice": 0.05,
-    "CarbonTradeBalance": 0,
     "DayPosition": 0,
     "MonthPosition": {},
     "AnnualPosition": 0,
@@ -87,12 +89,12 @@
       "TradeCost",
       "ComplianceCost"
     ],
-    "TotalCost": 20000,
+    "TotalCost": 0,
     "RevenueType": [
       "ProductRevenue",
       "TradeRevenue"
     ],
-    "TotalRevenue": 30000,
-    "Profit": 10000
+    "TotalRevenue": 0,
+    "Profit": 0
   }
 }
