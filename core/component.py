@@ -198,18 +198,6 @@ class Energy(BaseComponent):
         return round(syn, self.digits)
 
 
-# local/global functions can be added in Manager's pipe
-def global_margin_abate_cost(objs: list):
-    """Marginal abatement cost is the concept that describes the cost of abatement will be descending
-    when the total abatement goes higher. The adjustment usually happens at a yearly basis.
-    """
-    pass
-
-
-def local_func(obj):
-    pass
-
-
 class Abatement(BaseComponent):
     """
     The Abatement object for an industrial firm. It can be understood as a technical package
@@ -424,8 +412,8 @@ class CarbonTrade(BaseComponent):
     # general specification
     frequency: str = 'day'
     clock: Any  # Clock object
-    quit: float = 1  # a firm with `position=0` do not trade if `quit=1`
     order: list = []  # where historic orders are stored (`Order` object)
+
     lockable: float = 1  # 1=True, 0=False, if True, allow to lock the firm when its |position|<0.001
     lock: float = 0  # 1=True, can trade; 0=False, cannot trade; use `Lock` only when lock=1
 
@@ -588,8 +576,9 @@ class CarbonTrade(BaseComponent):
             position = self.non_compliance_allocator()
 
         self.MonthPosition = position
-        # update daily position for trading (the last day is excluded so we plus 1)
-        day_position = self.get_position('month') / (self.clock.workdays_left() + 1)
+        # NB: update daily trading position but because the last workday is 1,
+        #     at the end of month, they trade in a relatively bigger amount
+        day_position = self.AnnualPosition / (self.clock.workdays_left() + 1)
         self.fit(DayPosition=round(day_position, self.digits))
 
     def get_position(self, frequency='month'):
@@ -635,9 +624,6 @@ class CarbonTrade(BaseComponent):
         """
         factors = self.Factors
         position = self.get_position('month')
-        if round(position, 5) == 0 and self.quit:
-            logger.warning(f'Firm [{self.uid}] cleared position and quit the market.')
-            return
 
         # use the realtime price to adjust firm's trading decision
         exp_price = self.ExpectCarbonPrice  # it changes only once a month
@@ -713,16 +699,6 @@ class CarbonTrade(BaseComponent):
 
 class Production(BaseComponent):
     """Production module decides firm's production output and input. The instruction is as followed:
-    1. `AnnualOutput/alpha1` controls the size of energy/material consumption, for instance:
-        - `900/3000` (with r1=0.86, r2=0.88, r0=2.25) >> `12000/1600`
-        - `1200/3000` (with the same rx) >> `2787/385`
-        - proper range could be [0.
-    2. `alpha2` controls the share between energy and material consumption
-        - `900/3000` with alpha2=0.8 >> `111902/519`
-        - `1200/3000` with alpha2=0.8 >> `26000/121`
-    3. Set `alpha2` within [0.3, 0.7], otherwise it explodes
-    4. The unit of AnnualOutput is 10,000 while the unit of energy/material input is 1 tonne
-    5. Due to the unit of SynEnergyPrice, ProductPrice and MaterialPrice should be around 1~3
     """
     role: str = None  # buyer or seller and the difference is energy/output ratio
     unit: int = 10000  # regulated firms are relatively big enough
@@ -734,10 +710,11 @@ class Production(BaseComponent):
     SynEmissionFactor: float = 0.0  # update by `Energy.get_synthetic_factor`
 
     AnnualOutput: float = 0.0  # annual output
+    # TODO: monthly production plan if necessary
     MonthOutput: float = 0.0  # monthly output (monthly output = annual output / 12)
 
     ProductPrice: float = 0.0  # product price index
-    ProductRevenue: float = 0.0  # sales from products
+    Income: float = 0.0  # sales from products
     MaterialPrice: float = 0.0  # material price index
     MaterialCost: float = 0.0  # material cost
     CarbonPriceCache: list = []  # carbon price vector from Config or CarbonTrade.cache['CarbonPrice']
@@ -750,16 +727,34 @@ class Production(BaseComponent):
     def __init__(self, **config):
         super().__init__(**config)
         # TODO: adjust ProductPrice (PP) and MaterialPrice (MP) to control the role of firms
-        #       PP ++, Output --, Energy ++, Emission ++
-        #       MP ++, Output =, Energy --, Emission --
-        #       In Factors, rho1 ++, energy -- ; rho2 ++, energy ++ (eps<0.01)
+        #       rho ++, energy & material use ++
+        #       adjustor --, energy & material use ++
         if not self.role:
             return
 
-        pb = get_rand_vector(1, 3, 100, 200, True).pop() / 1e4  # positive value
-        pb = -pb if self.role == 'buyer' else pb
-        self.Factors['rho1'] += pb
-        self.ProductPrice = self.ProductPrice * (1 + pb)
+        factors = copy.deepcopy(self.Factors)
+        emission = config['TotalEmission']
+        while True:  # NB: must quit the dead loop
+            p = get_rand_vector(1, 3, 100, 200, True).pop() / 1e4
+            pb = p if self.role == 'buyer' else -p
+
+            factors['rho'] += pb
+            factors['adjustor'] -= pb
+            ue, ui = self.get_input(config['SynEnergyPrice'],
+                                    config['MaterialPrice'],
+                                    mean(config['CarbonPriceCache']),
+                                    config['SynEmissionFactor'],
+                                    factors['MaterialEmissionFactor'],
+                                    self.AnnualOutput,
+                                    factors['rho']+pb,
+                                    factors['adjustor'])
+            actual_emission = ue * 3.5 + ui * 2  # magic number
+            if (self.role == 'buyer' and actual_emission > emission) \
+                    or (self.role == 'seller' and actual_emission < emission):
+                self.Factors.update(factors)
+                break
+            else:
+                continue
 
     def _run(self, **kwargs):
         # `_run()` is not directly called. It will be called in `forward()`.
@@ -768,47 +763,36 @@ class Production(BaseComponent):
                             carbon_price_cache=self.CarbonPriceCache)
 
     @staticmethod
-    def _get_energy_input(pi0, rho0, rho1, rho2, alpha1, alpha2):
-        """Some best params: pi0=100, alpha=130, rho=0.6, alpha2=0.4"""
-        pi1 = (pi0 / alpha1) ** rho0  # (pi0 / alpha1) is relatively fixed, but rho0 is not
-        item1 = ((1 - alpha2) / pi1) * ((rho1 / rho2 / rho0) * ((1 - alpha2) / alpha2)) ** (rho0 / (1 - rho0))
-        item2 = alpha2 / pi1
-        return (item1 + item2) ** rho0
+    def get_input(eprice: float,
+                  mprice: float,
+                  cprice: float,
+                  efactor: float,
+                  mfactor: float,
+                  output: float,
+                  rho: float,
+                  adjustor: float):
+        """`x_e` in the equation derivation and the recommended params: rho=0.1.
 
-    @staticmethod
-    def _get_material_input(pi0, rho0, rho1, rho2, alpha1, alpha2):
-        pi1 = (pi0 / alpha1) ** rho0  # (pi0 / alpha1) is relatively fixed, but rho0 is not
-        item1 = (alpha2 / pi1) * ((rho2 / rho1 / rho0) * (alpha2 / (1 - alpha2))) ** (rho0 / (1 - rho0))
-        item2 = (1 - alpha2) / pi1
-        return (item1 + item2) ** rho0
+        :param eprice  : energy price, unit: 1000RMB/t
+        :param mprice  : material price, unit: 1000RMB/t
+        :param cprice  : carbon price, unit: 1000RMB/tCO2
+        :param efactor : synthetic emission factor, unit: tCO2/t metric energy
+        :param mfactor : material emission factor, unit: tCO2/t material input
+        :param output  : production output, unit: Income/ProductPrice
+        :param rho     : elasticity ratio of the CES function
+        :param adjustor: `A` param in the production function
+        """
+        syn_eprice = eprice - cprice * efactor
+        syn_mprice = mprice - cprice * mfactor
 
-    @staticmethod
-    def _get_expected_output(ue, ui, alpha1, alpha2, rho0):
-        return alpha1 * (alpha2 * ((alpha2 * ue) ** rho0) + (1 - alpha2) * ((alpha2 * ui) ** rho0)) ** (1 / rho0)
+        rho1 = 1 / (rho - 1)
+        rho2 = rho / (rho - 1)
+        rho3 = -1 / rho
 
-    def _get_inputs(self, syn_energy_price, material_price, mean_carbon_price, factors, syn_emission_factor,
-                    pi0: float):
-        # TODO: the input function is depreciated because when outputs grows, the inputs shrink.
-        #       energy/material input should increase when output increases.
-        # make sure rho0/rho1/rho2 have a bigger value, rho1 and rho2 are relatively fixed values
-        rho0 = 1 - 1 / factors['sigma']
-
-        # TODO: rho1 & rho2 are too important in deciding energy and material inputs
-        #       it's better to constrain the variance at 0.01 level (<|0.1| in total)
-        #       rho1 ++, energy -- ; rho2 ++, energy ++
-        duff_rho1 = syn_energy_price - mean_carbon_price * syn_emission_factor
-        diff_rho2 = material_price - mean_carbon_price * syn_emission_factor
-        rho1 = logistic_prob(0.2, 2, duff_rho1) * self.Factors['rho1']
-        rho2 = logistic_prob(0.2, 0.8, diff_rho2) * self.Factors['rho2']
-
-        # if one of them is negative, sigma should change (make sure rho0 * rho1 or rho0 * rho2 is positive)
-        if (rho1 * rho0 * rho2) < 0:
-            rho0 = 1 - 1 / (- factors['sigma'])
-
-        # compute the optimal inputs
-        ue = self._get_energy_input(pi0, rho0, rho1, rho2, factors['alpha1'], factors['alpha2'])
-        ui = self._get_material_input(pi0, rho0, rho1, rho2, factors['alpha1'], factors['alpha2'])
-        return ue, ui
+        q = output / adjustor
+        einput = (syn_eprice ** rho1) * ((syn_mprice ** rho2 + syn_eprice ** rho2) ** rho3) * q
+        minput = (syn_mprice ** rho1) * ((syn_mprice ** rho2 + syn_eprice ** rho2) ** rho3) * q
+        return einput, minput
 
     def get_production(self,
                        syn_energy_price,
@@ -819,7 +803,6 @@ class Production(BaseComponent):
         :param syn_energy_price: synthetic energy price from Config or Energy instance
         :param syn_emission_factor: synthetic emission factor from Config or Energy instance
         :param carbon_price_cache: an array of carbon price from CarbonTrade.cache
-        :param kwargs: optional kwargs in _run() and forward()
         """
         factors = self.Factors  # make persistence of variables for quick testing
         prod_price = self.ProductPrice
@@ -834,15 +817,17 @@ class Production(BaseComponent):
             self.MonthOutput = round(output / 12, self.digits)
 
         # infer energy and material input through a CGE function
-        ue, ui = self._get_inputs(syn_energy_price,
-                                  material_price,
-                                  mean_carbon_price,
-                                  factors,
-                                  syn_emission_factor,
-                                  self.AnnualOutput)
+        ue, ui = self.get_input(syn_energy_price,
+                                material_price,
+                                mean_carbon_price,
+                                syn_emission_factor,
+                                self.Factors['MaterialEmissionFactor'],
+                                self.AnnualOutput,
+                                factors['rho'],
+                                factors['adjustor'])
         self.EnergyInput = ue
         self.MaterialInput = ui
-        self.ProductRevenue = self.ProductPrice * self.AnnualOutput
+        self.Income = self.ProductPrice * self.AnnualOutput
         self.MaterialCost = ui * self.MaterialPrice
         # TODO: only measure Scope 1&2 emissions regardless of `material use`
 
@@ -906,8 +891,8 @@ class Finance(BaseComponent):
 
     def get_revenue(self):
         """Get aggregate revenue after adding the following revenues up:
-        ProductRevenue, CarbonRevenue """
-        self.Revenue = {'ProductRevenue': self.Production['ProductRevenue'],
+        Income, CarbonRevenue """
+        self.Revenue = {'Income': self.Production['Income'],
                         'TradeRevenue': self.CarbonTrade['TradeRevenue']}
         self.TotalRevenue = round(sum(list(self.Revenue.values())), self.digits)
         return self.TotalRevenue

@@ -13,3 +13,6 @@ pydantic>=1.9.0  # create standardized data item
 
 # visualization
 pyecharts>=1.9.1
+
+# math
+fitter>=1.2.3

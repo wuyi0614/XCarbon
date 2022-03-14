@@ -6,9 +6,8 @@
 from tqdm import tqdm
 from collections import defaultdict
 
-from core.base import init_logger, read_config, Clock, shuffler
+from core.base import init_logger, Clock, shuffler
 from core.stats import get_rand_vector, logistic_prob
-from core.firm import RegulatedFirm
 from core.market import BaseMarket, Statement
 
 # init a logger
@@ -182,6 +181,9 @@ class Scheduler:
         #     we do not significantly allow them to fluctuate. So they should have a lower theta & gamma
         #     The core logic here is more supply, lower the price.
         is_up = last < now  # if the value is increasing, True=yes, False=no
+        if any([now == 0, last == 0]):
+            return 1
+
         r = now / last
         if which in ['product', 'energy']:  # slow pace
             param = dict(gamma=0.6, theta=1.2)  # doubling the value brings 5% growth
@@ -239,7 +241,7 @@ class Scheduler:
             # collect statistical info
             stat['profit'] += [agent.Profit]
             stat['allocation'] += [agent.Allocation]
-            stat['emission'] += [agent.Emission]
+            stat['emission'] += [agent.TotalEmission]
             stat['abatement'] += [agent.Abate]
             stat['traded'] += [agent.Traded]
 

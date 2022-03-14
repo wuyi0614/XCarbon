@@ -601,6 +601,8 @@ class CarbonMarket(BaseMarket):
         if freq == 'month':
             month = self.Clock._get('month')
             book = book[book.ts.str.contains(month)]
+            if book.empty:
+                return
 
         return self._create_bar_metrics(book, freq, 'state')
 
@@ -644,31 +646,4 @@ def bundle_bar_data(last_bar: Bar, iter_orders: pd.DataFrame, frequency) -> Bar:
 
 
 if __name__ == "__main__":
-    from core.base import Clock
-
-    # /// temporary test zone ///
-    # TODO: tests should be migrated to /test directory in the next step
-    buy = Order(price=0.5, quantity=-300, mode="buy", offerer_id="o1")
-    sell = Order(price=0.4, quantity=200, mode="sell", offerer_id="s1")
-    # successful sell settlement:
-    state, offerer, offeree = buy.settle(sell)
-    assert state.price == 0.45
-    assert offerer.quantity == -100
-    assert offeree.status == "accepted"
-
-    # failed sell settlement:
-    buy = Order(price=0.5, quantity=-300, mode="buy", offerer_id="o1")
-    sell = Order(price=0.6, quantity=200, mode="sell", offerer_id="s1")
-    state, offerer, offeree = buy.settle(sell)
-    assert state is None
-    assert offerer.status == "waiting"
-    assert offeree.status == "waiting"
-
-    # use OrderBook to match orders
-    ob = OrderBook(frequency='day')
-    clock = Clock('2021-01-01')
-
-    # Test: market function
-    market = CarbonMarket(ob=ob, clock=clock, freq='day')
-    market.open()
-    market.close()
+    pass

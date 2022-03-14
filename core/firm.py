@@ -11,17 +11,44 @@ from copy import deepcopy
 from random import sample
 from typing import Any
 
+import pandas as pd
+
 from core.base import generate_id, init_logger, Clock, BaseComponent
 from core.stats import get_rand_vector
-from core.config import get_energy_input_proportion, FOSSIL_ENERGY_TYPES, ENERGY_BASELINE_FACTORS
+from core.config import get_energy_input_proportion, get_firm_distribution, \
+    FOSSIL_ENERGY_TYPES, ENERGY_BASELINE_FACTORS, DEFAULT_MARKET_CAP, DEFAULT_EMISSION_UNIT
 
 # env vars
 logger = init_logger('Firm')
 
+DEFAULT_FIRM_RANDOM_SPECS = ['CarbonIntensity', 'TotalEmission', 'Income']
+
 
 # functions for firms
+def populate_firm(industry: str, population: int):
+    """Create industry-specific firms in population randomly or not
+
+    :param industry: which type of industries for population, e.g. power, cement, iron, chemical
+    :param population: number of firms
+    """
+    # obtain the distribution of firms' emission
+    emi_dist = get_firm_distribution(industry, 'emission', population)
+    emi_ratio = emi_dist / emi_dist.sum()
+    emi_by_firm = DEFAULT_MARKET_CAP * emi_ratio  # the default unit: 1000 tonne
+
+    # unit of intensity: t/1000 RMB, and then unit of income:
+    int_by_firm = get_firm_distribution(industry, 'intensity', population)
+    inc_by_firm = emi_by_firm * DEFAULT_EMISSION_UNIT / int_by_firm  # unit: 1e3 RMB
+
+    # convert data into a pd.DataFrame and make a generator
+    df = pd.DataFrame([int_by_firm, emi_by_firm, inc_by_firm]).T
+    df.columns = DEFAULT_FIRM_RANDOM_SPECS
+    for _, row in df.iterrows():
+        yield row.to_dict()
+
+
 def randomize_firm_specs(specs, role='random', inflation=0.1, random_factors=False):
-    """Randomly create firm agents according to a template specification with proper randomization
+    """(ABANDONED) Randomly create firm agents according to a template specification with proper randomization
 
     :param specs: A specification template for firms
     :param role: assign a role to the firm and make sure it has negative (buyer) or positive (seller) position
@@ -40,14 +67,7 @@ def randomize_firm_specs(specs, role='random', inflation=0.1, random_factors=Fal
     - EnergyPrice, slightly adjustable
 
     CarbonTrade:
-    - ExpectCarbonPrice, slightly adjustable
-    -
-
-    The following varaibles will be fixed and shared across different agents:
-    - Unit
-    - CarbonPrice
-    - Trade
-
+    - ExpectCarbonPrice, slightly adjustable according to firms' carbon intensity
     """
     # logics for firm generation, the principle is, price and output should be positively correlated
     template_spec = deepcopy(specs)
@@ -150,30 +170,6 @@ def randomize_firm_specs(specs, role='random', inflation=0.1, random_factors=Fal
     return template_spec
 
 
-# TODO: allowance allocator for regulated firms and plz improve it in the future
-def compliance_allocator(pos: float, clock: Clock, **spec) -> dict:
-    """Allocator returns a generator which accepts Clock object and models in a form of series"""
-    compliance_month = spec.get('compliance_month', 12)
-    compliance_window = spec.get('compliance_window', 2)
-    compliance_ratio = spec.get('compliance_ratio', 0.9)
-
-    # how many months before the compliance
-    ex_months = compliance_month - compliance_window - clock.Month + 1
-    non_comp_month = pos * (1 - compliance_ratio) / ex_months
-    comp_month = pos * compliance_ratio / (12 - ex_months)
-    series = [non_comp_month] * ex_months + [comp_month] * (12 - ex_months)
-    return {month: series[idx] for idx, month in enumerate(range(clock.Month, 13, 1))}
-
-
-def non_compliance_allocator(pos: float, clock: Clock, **spec) -> dict:
-    """Allocator returns a non-compliance like series of trading allowances,
-    and allocator should returns allowances at a monthly basis and then it will be divided at a daily basis.
-    """
-    ex_months = 12 - clock.Month + 1
-    series = [pos / ex_months] * ex_months
-    return {month: series[idx] for idx, month in enumerate(range(clock.Month, 13, 1))}
-
-
 # classes for firms
 class BaseFirm(BaseComponent):
     """A base firm has the following attributes and behaviors, and it also evolves with the time goes."""
@@ -223,19 +219,18 @@ class RegulatedFirm(BaseFirm):
 
     # key indicators (from external instances)
     Profit: float = 0.0
-    Output: float = 0.0
     EnergyInput: float = 0.0
     MaterialInput: float = 0.0
 
-    Emission: float = 0.0
+    Income: float = 0.0
+    TotalEmission: float = 0.0
+    CarbonIntensity: float = 0.0
+    AnnualOutput: float = 0.0
+
     Allocation: float = 0.0
     Abate: float = 0.0
     Traded: float = 0.0
     Position: float = 0.0
-
-    # configurations
-    AbateConfig: dict = {}
-    FirmConfig: dict = {}
 
     # the objects here are object instances
     external: list = ['Energy', 'CarbonTrade', 'Production', 'Abatement', 'Policy', 'Finance',
@@ -247,6 +242,10 @@ class RegulatedFirm(BaseFirm):
     Policy: Any
     Finance: Any
 
+    # configurations
+    AbateConfig: dict = {}
+    FirmConfig: dict = {}
+
     def __init__(self, clock, **configs):
         """To initiate the Firm instance, take the following steps:
 
@@ -256,6 +255,11 @@ class RegulatedFirm(BaseFirm):
 
         :param clock: initiated Clock object
         :param configs: configurations for instances, abatement, and instances
+
+        Must-have parameters:
+        - CarbonIntensity: carbon intensity (t/1e4RMB) and the power industry's average level is 18
+        - Emission: total emission
+        - Income: total income (revenue, not profit)
         """
         super(RegulatedFirm, self).__init__(clock, **configs)
         # set up parameters
@@ -267,12 +271,20 @@ class RegulatedFirm(BaseFirm):
     def activate(self):
         """Activate instances by setting them up"""
         # initiate external instances
+        # align production with our configs
+        pparams = self.FirmConfig['Production']
+        self.AnnualOutput = self.Income / pparams['ProductPrice']
         self.Production = self.Production(uid=self.uid,
                                           role=self.role,
-                                          **self.FirmConfig['Production']).forward()
+                                          Income=self.Income,
+                                          AnnualOutput=self.AnnualOutput,
+                                          TotalEmission=self.TotalEmission,
+                                          **pparams).forward()
+        # update the other components
         self.Energy = self.Energy(self.random,
                                   uid=self.uid,
                                   Production=self.Production,
+                                  TotalEmission=self.TotalEmission,
                                   **self.FirmConfig['Energy']).forward()
         self.CarbonTrade = self.CarbonTrade(uid=self.uid,
                                             clock=self.clock,
@@ -385,11 +397,11 @@ class RegulatedFirm(BaseFirm):
         # Note: using `forward` WILL NOT automatically make cache/reset of instances,
         #       because most of the attributes will be automatically refreshed
         self.Profit = deepcopy(self.Finance.Profit)
-        self.Output = deepcopy(self.Production.AnnualOutput)
+        self.AnnualOutput = deepcopy(self.Production.AnnualOutput)
         self.EnergyInput = deepcopy(self.Production.EnergyInput)
         self.MaterialInput = deepcopy(self.Production.MaterialInput)
 
-        self.Emission = deepcopy(self.Energy.get_total_emission())
+        self.TotalEmission = deepcopy(self.Energy.get_total_emission())
         self.Allocation = deepcopy(self.Energy.Allocation)
         self.Abate = deepcopy(self.Abatement.TotalAbatement)
 
