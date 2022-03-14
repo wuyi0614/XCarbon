@@ -228,11 +228,15 @@ class Clock:
     def is_yearend(self):
         return self.Month == 12 and self.Day == 31
 
-    def workdays_left(self):
-        if self.Month == 12:
-            last_day = datetime(self.Year, self.Month, 31)
+    def workdays_left(self, freq='month'):
+        if freq == 'month':
+            if self.Month == 12:
+                last_day = datetime(self.Year, self.Month, 31)
+            else:
+                last_day = datetime(self.Year, self.Month + 1, 1) - timedelta(days=1)
         else:
-            last_day = datetime(self.Year, self.Month + 1, 1) - timedelta(days=1)
+            last_day = datetime(self.Year, 12, 31)
+
         return self._workdays_between(self.Date, last_day)
 
 
@@ -418,7 +422,7 @@ class BaseComponent(BaseModel):
         """Fit the object on a set of parameters (consistent with its attributes)"""
         for k, v in kwargs.items():
             if k in dir(self):
-                self.__setattr__(k, v)
+                self.__setattr__(k, deepcopy(v))
 
     def validate(self, *args):
         """Validate objects if they are not empty"""

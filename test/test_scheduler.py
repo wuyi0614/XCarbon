@@ -5,21 +5,25 @@
 # Created at 2022-03-10.
 
 from warnings import filterwarnings
-from scheduler import Scheduler
+from random import sample
 
 from core.component import *
 from core.firm import RegulatedFirm, populate_firm
 from core.market import CarbonMarket, OrderBook
 from core.base import Clock, read_config
 from core.plot import plot_kline, plot_volume, plot_grid
+from scheduler import Scheduler
 
 from pytz_deprecation_shim import PytzUsageWarning
+from loguru import logger
 
 filterwarnings('ignore', category=PytzUsageWarning)
 
 FIRM_CONFIG = read_config('config/power-firm-20220206.json')
 ABATE_CONFIG = read_config('config/power-abate-20220206.json')
 SCHEDULER_CONFIG = read_config('config/scheduler-20211027.json')
+
+logger.add('test_scheduler.log', level='INFO')
 
 
 def test_scheduler_daily_clear():
@@ -64,7 +68,11 @@ def test_scheduler_monthly_clear():
     # create scheduler object
     sch = Scheduler(cm, ck, 'day', **SCHEDULER_CONFIG)
     # create agents (considering both buyer/seller, compliance/non-compliance traders)
-    for spec in populate_firm('power', 30):
+
+    specs = list(populate_firm('power', 100))
+    buyer_specs = sample(specs, 60)
+    seller_specs = [item for item in specs if item not in buyer_specs]
+    for spec in buyer_specs:
         buyer = RegulatedFirm(clock=ck,
                               random=True,
                               role='buyer',
@@ -79,7 +87,7 @@ def test_scheduler_monthly_clear():
                               **spec)
         sch.take(buyer)
 
-    for spec in populate_firm('power', 40):
+    for spec in seller_specs:
         seller = RegulatedFirm(clock=ck,
                                random=True,
                                role='seller',
@@ -106,11 +114,11 @@ def test_scheduler_yearly_clear():
 
     # create scheduler object
     sch = Scheduler(cm, ck, 'day', **SCHEDULER_CONFIG)
-    for spec in populate_firm('power', 50):
+    for spec in populate_firm('power', 1000):
         firm = RegulatedFirm(clock=ck,
                              random=True,
                              role='',
-                             compliance=1,
+                             compliance=0,
                              FirmConfig=FIRM_CONFIG,
                              AbateConfig=ABATE_CONFIG,
                              Energy=Energy,
@@ -135,5 +143,5 @@ def test_scheduler_yearly_clear():
     # draw bar volume chart
     volumes = report['volume'].astype(float).values.round(1).tolist()
     c2 = plot_volume(volumes, dates)
-    plot_grid(c1, c2, 'trade-volume-baseline-compliance', True)
+    plot_grid(c1, c2, 'non-compliance-no-role-pop-1000', True)
 

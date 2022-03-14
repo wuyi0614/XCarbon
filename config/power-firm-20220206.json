@@ -42,7 +42,7 @@
       "sigma": -0.8,
       "_desc1": "alpha0/beta0(<0) are params for demand function between price and output, range: 15~200",
       "thetai": 0.5,
-      "gammai": 1e-4,
+      "gammai": 0.05,
       "_desc2": "gammai controls the speed of change in carbon price (<0.01 because Position could be huge)",
       "theta2": 1.5,
       "gamma2": 0.6,
@@ -52,9 +52,9 @@
       "theta3": 0.2,
       "gamma3": 0.8,
       "_desc6": "theta3 & gamma3 are params for probs from quantity pressure",
-      "theta4": 0.8,
-      "gamma4": 1.5,
-      "_desc7": "theta4 & gamma4 are params for logistic prob from price pressure"
+      "theta4": 3,
+      "gamma4": 10,
+      "_desc7": "theta4 & gamma4 are params for logistic prob from price pressure, ~5% as volatility"
     }
   },
   "CarbonTrade": {

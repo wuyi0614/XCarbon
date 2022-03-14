@@ -528,6 +528,11 @@ class CarbonTrade(BaseComponent):
         """Compliance trader shows different patterns"""
         # TODO: 大企业比如华能集团（拥有很多的电厂和配额）的交易行为会因为持有配额数量多而发生改变
         # test if it's under pressure either from price or quantity
+        if round(self.AnnualPosition, self.digits) == 0:
+            self.AnnualPosition = 0
+            self.DayPosition = 0
+            self.MonthPosition = {i: 0 for i in range(1, 13, 1)}
+
         if self.step == 0:  # initiation
             self.forward_yearly(**kwargs)
 
@@ -578,7 +583,7 @@ class CarbonTrade(BaseComponent):
         self.MonthPosition = position
         # NB: update daily trading position but because the last workday is 1,
         #     at the end of month, they trade in a relatively bigger amount
-        day_position = self.AnnualPosition / (self.clock.workdays_left() + 1)
+        day_position = self.AnnualPosition / (self.clock.workdays_left('year') + 1)
         self.fit(DayPosition=round(day_position, self.digits))
 
     def get_position(self, frequency='month'):
@@ -598,10 +603,11 @@ class CarbonTrade(BaseComponent):
         # Sellers are not expecting carbon prices falling, but they do hope it could grow
         # The true logic is, when they hold more, they trade more aggressively
         if dist == 'logistic':
-            gammai = factors['gammai'] - self.clock.Month / 9  # a bodge but it must be 9 (12 - 3, compliance period)
+            # NB:because gammai is negative, when month-position is positive, we have prob<1
+            gammai = factors['gammai'] - self.clock.Month / 19  # a bodge but it must be 9 (12 - 3, compliance period)
             gammai = gammai - 0.01 if gammai == 0 else gammai
-            upper_prob = logistic_prob(theta=factors['thetai'], gamma=gammai, x=-month_position)
-            lower_prob = logistic_prob(theta=factors['thetai'], gamma=factors['gammai'], x=-month_position)
+            upper_prob = logistic_prob(theta=factors['thetai'], gamma=gammai, x=month_position)
+            lower_prob = logistic_prob(theta=factors['thetai'], gamma=factors['gammai'], x=month_position)
         else:
             # TODO: the linear mode is not correct with its `speed` param
             prob = range_prob(month_position, 0.01) - 0.5
@@ -616,14 +622,15 @@ class CarbonTrade(BaseComponent):
         self.ExpectCarbonPrice = round(cur_price * prob, 6)
         return self.ExpectCarbonPrice
 
-    def get_decision(self, realtime_price: float = 0.0, prob: float = 0.0, **kwargs):
+    def get_decision(self, realtime_price: float = 0.0, **kwargs):
         """Firm decides a transaction according to its trading needs, and firms react to variance in current price.
 
         :param realtime_price: the realtime carbon price in the market for firm's trading decision
-        :param prob: the realtime probability for firm to trade (randomly determined)
         """
         factors = self.Factors
         position = self.get_position('month')
+        if position == 0:
+            return
 
         # use the realtime price to adjust firm's trading decision
         exp_price = self.ExpectCarbonPrice  # it changes only once a month
@@ -654,7 +661,7 @@ class CarbonTrade(BaseComponent):
 
         self.CarbonPrice = current_price if current_price else self.CarbonPrice
         self.get_price(dist)
-        order = self.get_decision(current_price, prob)
+        order = self.get_decision(current_price)
         prob_ = range_prob(self.DayPosition, speed=0.05)
         return order if prob_ >= prob else None
 

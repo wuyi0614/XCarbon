@@ -70,7 +70,7 @@ class Scheduler:
             return
 
     def __repr__(self):
-        return f"Scheduler with {self.Size} firms at step={self.step}"
+        return f"Scheduler with {self.Size} firms at step={self.step}\n{self.Data}"
 
     def take(self, *agents):
         """Pass agents into the Pool"""
@@ -122,11 +122,11 @@ class Scheduler:
             for _, agent in pool.items():
                 if not market.to_dataframe().empty:
                     df = market.to_dataframe()
-                    mean_ = df['mean'].values[-1]
+                    close = df['close'].values[-1]
                 else:
-                    mean_ = None
+                    close = None
 
-                item = agent.trade(mean_, prob)
+                item = agent.trade(close, prob)
                 if item:
                     ob.put(item)
 
@@ -240,6 +240,7 @@ class Scheduler:
             abate['last'] += [agent.Abatement.cache['TotalAbatement'][-1]]
             # collect statistical info
             stat['profit'] += [agent.Profit]
+            stat['output'] += [agent.AnnualOutput]
             stat['allocation'] += [agent.Allocation]
             stat['emission'] += [agent.TotalEmission]
             stat['abatement'] += [agent.Abate]
