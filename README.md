@@ -5,7 +5,7 @@ The X-Carbon pricing decision-making system aims to help build a carbon pricing 
 - Deep learning price tracker
 - Reinforcement learning based carbon pricing decision-making system
 
-## Agent-based modeling
+## Agent-based modeling (v0.7)
 The RL decision-making system has a few components: 
 
 - BaseModule: an underlying agent-based model with economics basis

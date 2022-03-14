@@ -8,34 +8,34 @@ from pathlib import Path
 
 from core.base import read_config, Clock
 from core.component import *
-from core.firm import RegulatedFirm
+from core.firm import RegulatedFirm, populate_firm
 
-root_path = Path('config')
-# (1) energy, (2) production, (3) abatement, (4) carbon trade, (5) policy, (6) finance
-config = read_config(root_path / 'power-firm-20220206.json')
-abate_config = read_config(root_path / 'power-abate-20220206.json')
+FIRM_CONFIG = read_config(Path('config') / 'power-firm-20220206.json')
+ABATE_CONFIG = read_config(Path('config') / 'power-abate-20220206.json')
+CLOCK = Clock('2020-01-01')
 
-clock = Clock('2020-01-01')
 
-firm = RegulatedFirm(clock=clock,
-                     role='buyer',
-                     FirmConfig=config,
-                     AbateConfig=abate_config,
-                     Energy=Energy,
-                     CarbonTrade=CarbonTrade,
-                     Production=Production,
-                     Abatement=Abatement,
-                     Policy=Policy,
-                     Finance=Finance)
+def test_firm_trading():
+    firm = RegulatedFirm(clock=CLOCK,
+                         role='buyer',
+                         CarbonIntensity=18,  # 18 ton/ wton
+                         Emission=10 * 18,  # 180 kton
+                         Income=1e5,  # 1e8 RMB -> 1e5 kton -> 1e4 wton
+                         FirmConfig=FIRM_CONFIG,
+                         AbateConfig=ABATE_CONFIG,
+                         Energy=Energy,
+                         CarbonTrade=CarbonTrade,
+                         Production=Production,
+                         Abatement=Abatement,
+                         Policy=Policy,
+                         Finance=Finance)
 
-firm.activate()
-
-# test firm's trading
-firm.trade(None, 0.02)
-
-# test monthly forward
-mean_price = 0.55
-firm.forward_monthly(mean_price)
+    firm.activate()
+    # test firm's trading
+    firm.trade(None, 0.02)
+    # test monthly forward
+    mean_price = 0.55
+    firm.forward_monthly(mean_price)
 
 # test long-term forwards
 for year in range(4):
@@ -54,3 +54,19 @@ for year in range(4):
 order = firm.trade(0.06, 0.1)
 assert order, f'InvalidFirmSpecification'
 
+
+def test_firm_population():
+    pop = 1000
+    i, e, c = populate_firm('power', pop)
+    for idx in range(pop):
+        firm = RegulatedFirm(clock=ck,
+                             random=True,
+                             role='',
+                             FirmConfig=FIRM_CONFIG,
+                             AbateConfig=ABATE_CONFIG,
+                             Energy=Energy,
+                             CarbonTrade=CarbonTrade,
+                             Production=Production,
+                             Abatement=Abatement,
+                             Policy=Policy,
+                             Finance=Finance)
