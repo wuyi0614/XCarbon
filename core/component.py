@@ -583,7 +583,7 @@ class CarbonTrade(BaseComponent):
         self.MonthPosition = position
         # NB: update daily trading position but because the last workday is 1,
         #     at the end of month, they trade in a relatively bigger amount
-        day_position = self.AnnualPosition / (self.clock.workdays_left('year') + 1)
+        day_position = self.get_position('month') / (self.clock.workdays_in_month(self.clock.Month))
         self.fit(DayPosition=round(day_position, self.digits))
 
     def get_position(self, frequency='month'):

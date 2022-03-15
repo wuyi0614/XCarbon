@@ -239,6 +239,11 @@ class Clock:
 
         return self._workdays_between(self.Date, last_day)
 
+    def workdays_in_month(self, month: int):
+        start = datetime(self.Year, month, 1)
+        end = datetime(self.Year, month+1, 1) - timedelta(days=1)
+        return self._workdays_between(start, end)
+
 
 def pause(secs):
     time.sleep(secs)

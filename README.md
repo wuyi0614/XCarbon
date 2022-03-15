@@ -1,18 +1,23 @@
-# XCarbon - X-Carbon Pricing Decision-making System (X-CarPDS)
+# XCarbon - X-Carbon Decision Support System (X-CDSS)
 
-The X-Carbon pricing decision-making system aims to help build a carbon pricing system composed by:
+## Introduction
+
+The X-Carbon decision support system aims to build a carbon market decision support system for carbon price prediction, which is composed by:
 
 - Deep learning price tracker
-- Reinforcement learning based carbon pricing decision-making system
+- Agent-based carbon market modelling
+- Reinforcement learning supported decision-making system
+- Version = 0.8
 
-## Agent-based modeling (v0.7)
-The RL decision-making system has a few components: 
+## Agent-based modeling
+The Decision Support System is built on an agent-based model with: 
 
-- BaseModule: an underlying agent-based model with economics basis
-- RLModule: a reinforcement learning module as optimizer for interaction data from the underlying module
-- OptModule: an optimization module with heaps of machine learning tools that learns from the historical outputs
+- Components: the elements for firms and the market, including Production, Energy, Abatement, CarbonTrade, Policy, Finance
+- Firm: the customized firm types (e.g. Regulated Firm) for the market
+- Market: the customized market object for the carbon market, including an OrderBook object
 - Scheduler: a scheduler that controls economic underlying models, making outputs, optimization, and retraining
-- Interface: a user-friendly interface for simplified interactions between the system and users
+- WebApp: a user-friendly interface for necessary interactions between the system and users (supported by streamlit)
+- RLModule (forthcoming): a reinforcement learning module as optimizer for interaction data from the underlying module
 
 ## Underlying modules
 
@@ -30,10 +35,11 @@ The RL decision-making system has a few components:
 #### TODO
 
 - [ ] Strategy: allow scenario-based settings for the simulation of component/firm/market
-- [ ] the expected carbon price should be correlated with the abatement cost, and thus it makes firms randomized in abatement choices
-- [ ] the abatement cost should be correlated with firm's carbon intensity, higher the intensity, lower the cost
-- [ ] Production: use `carbon intensity` for the initialization of output/allocation in the system
+- [ ] Abatement: the abatement cost should be correlated with firm's carbon intensity, higher the intensity, lower the cost
+- [x] Production: use `carbon intensity` for the initialization of output/allocation in the system
 - [ ] Abatement: abatement cost is built in the form of a MAC curve (in `Scheduler.clear_yearly`)
+- [ ] CarbonTrade: the expected carbon price should be correlated with the abatement cost, and thus it makes the firms randomized in abatement choices
+- [ ] CarbonTrade: obtain expected carbon price by optimizing firm's abatement cost and supply/demand equilibrium in the market
 
 ### Firm
 
