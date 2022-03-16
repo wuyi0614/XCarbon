@@ -241,7 +241,7 @@ class Clock:
 
     def workdays_in_month(self, month: int):
         start = datetime(self.Year, month, 1)
-        end = datetime(self.Year, month+1, 1) - timedelta(days=1)
+        end = datetime(self.Year, month+1, 1) - timedelta(days=1) if month < 12 else datetime(self.Year, 12, 31)
         return self._workdays_between(start, end)
 
 
@@ -343,7 +343,7 @@ class BaseComponent(BaseModel):
     frequency: str = 'month'  # it determines how many caches will be created
     added: list = []  # added instance names
     step: int = 0  # initial step is 0
-    digits: int = 6  # digits for numeric values
+    digits: int = 3  # digits for numeric values
 
     external: list = []  # instance attributes inherited externally
     nocache: list = []  # list attributes not used for cache
@@ -366,6 +366,10 @@ class BaseComponent(BaseModel):
 
     def __getitem__(self, item):
         return self.__getattribute__(item)
+
+    def __call__(self, **kwargs):
+        self.__init__(**kwargs)
+        return self
 
     @staticmethod
     def _reset(obj):

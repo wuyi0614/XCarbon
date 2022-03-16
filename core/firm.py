@@ -215,7 +215,7 @@ class RegulatedFirm(BaseFirm):
     compliance: str = 0  # 1=compliance trader; 0=non-compliance trader
     role: str = ''  # buyer or seller or None
     random: bool = False  # True=allow random, False=not random
-    Trader: int = 1  # 1=trader, 0=quitter
+    ComplianceTrader: int = 0  # 1=True, 0=False
 
     # key indicators (from external instances)
     Profit: float = 0.0
@@ -288,6 +288,7 @@ class RegulatedFirm(BaseFirm):
                                   **self.FirmConfig['Energy']).forward()
         self.CarbonTrade = self.CarbonTrade(uid=self.uid,
                                             clock=self.clock,
+                                            ComplianceTrader=self.ComplianceTrader,
                                             Energy=self.Energy.snapshot(),
                                             Factors=self.Production.Factors,
                                             **self.FirmConfig['CarbonTrade']).forward()
@@ -331,7 +332,7 @@ class RegulatedFirm(BaseFirm):
         CarbonTrade: clear daily transactions
         """
         self.CarbonTrade.clear(statement)
-        self.Traded = self.CarbonTrade.Traded
+        self.Traded += statement.quantity
         return self
 
     def forward_monthly(self, carbon_price):
@@ -410,6 +411,10 @@ class RegulatedFirm(BaseFirm):
             if 'forward' in dir(attr):
                 self.__getattribute__(attr).forward()
 
+        # make cache and reset the attributes
+        reset_keys = ['Profit', 'AnnualOutput', 'EnergyInput', 'MaterialInput',
+                      'TotalEmission', 'Allocation', 'Abate']
+        self._cache(nocache=self.external, reset=reset_keys)
         self.step += 1
         return self
 

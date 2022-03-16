@@ -14,7 +14,7 @@
       "coal": 2.380,
       "gas": 2.162,
       "oil": 3.020,
-      "electricity": 0.0009
+      "electricity": 0.0006
     },
     "EnergyPrice": {
       "coal": 0.565,
@@ -50,7 +50,7 @@
       "decay": 1,
       "_desc4": "annual decay rate of allowance allocation in the carbon market",
       "theta3": 0.2,
-      "gamma3": 0.8,
+      "gamma3": 0.1,
       "_desc6": "theta3 & gamma3 are params for probs from quantity pressure",
       "theta4": 3,
       "gamma4": 10,
@@ -63,7 +63,6 @@
     "DayPosition": 0,
     "MonthPosition": {},
     "AnnualPosition": 0,
-    "ComplianceTrader": 0,
     "ComplianceSetting": {
       "compliance_month": 12,
       "compliance_window": 2,

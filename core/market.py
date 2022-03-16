@@ -221,6 +221,14 @@ class Order(BaseModel):
         :param transaction: the Order instance with an opposite mode (buy -> sell / sell -> buy)
         :return a tuple of (Statement(success), self, Order(accepted)) or (None, self, Order(waiting))
         """
+        if transaction.quantity == 0 or self.quantity == 0:
+            if transaction.quantity == 0:
+                transaction.status = 'accepted'
+            elif self.quantity == 0:
+                self.status = 'accepted'
+
+            return None, self, transaction
+
         # successful settlement: 1) buy with a lower offeree's price, 2) sell with a higher offeree's price
         success = (self.mode == "buy" and transaction.mode == "sell" and transaction.price <= self.price,
                    self.mode == "sell" and transaction.mode == "buy" and transaction.price >= self.price)
@@ -370,9 +378,9 @@ class OrderBook:
         self.empty = False
         # every order will be executed and compared to the Order Book
         if item.mode == "sell":
-            query = "price>={} & mode!='{}' & status=='waiting' & ts<='{}'".format(item.price, item.mode, item.ts)
+            query = f"price>={item.price} & quantity!=0 & mode!='{item.mode}' & status=='waiting' & ts<='{item.ts}'"
         else:
-            query = "price<={} & mode!='{}' & status=='waiting' & ts<='{}'".format(item.price, item.mode, item.ts)
+            query = f"price<={item.price} & quantity!=0 & mode!='{item.mode}' & status=='waiting' & ts<='{item.ts}'"
 
         selected = self.query(query)
         if selected.empty:

@@ -431,11 +431,11 @@ class CarbonTrade(BaseComponent):
     DayPosition: float = 0.0
     MonthPosition: dict = {}  # a long-term plan on the specific position of each month
     AnnualPosition: float = 0.0  # allowance surplus/shortage in total (yearly basis)
-    QuantLastComplete: float = 0.0  # the t-1 completed transaction
 
     ComplianceTrader: int = 0  # 1=compliance trader; 0=non-compliance trader
     ComplianceSetting: dict = {}  # compliance setting works only if `ComplianceTrader=1`
 
+    LastTraded: float = 0.0  # the t-1 completed transaction
     Traded: float = 0.0  # traded allowance accounting
 
     # inherited from external instances in the form `dict`
@@ -465,9 +465,13 @@ class CarbonTrade(BaseComponent):
         self.get_price(**kwargs)
 
         nocache = ['AnnualPosition', 'MonthPosition', 'DayPosition',
-                   'CarbonPrice', 'ExpectCarbonPrice', 'QuantLastComplete', 'Traded']
+                   'CarbonPrice', 'ExpectCarbonPrice', 'QuantLastComplete']
         self._cache(nocache + self.nocache)
         self.step += 1
+
+        # NB: Traded + AnnualPosition = Allocation
+        assert round(abs(self.Traded + self.AnnualPosition), self.digits) == self.Energy['Allocation'], \
+            f'Error: {[self.Traded, self.AnnualPosition, self.Energy["Allocation"]]}'
         return self
 
     def forward_yearly(self, **kwargs):
@@ -528,63 +532,62 @@ class CarbonTrade(BaseComponent):
         """Compliance trader shows different patterns"""
         # TODO: 大企业比如华能集团（拥有很多的电厂和配额）的交易行为会因为持有配额数量多而发生改变
         # test if it's under pressure either from price or quantity
-        if round(self.AnnualPosition, self.digits) == 0:
-            self.AnnualPosition = 0
-            self.DayPosition = 0
-            self.MonthPosition = {i: 0 for i in range(1, 13, 1)}
-
         if self.step == 0:  # initiation
             self.forward_yearly(**kwargs)
+            position = self.compliance_allocator() if self.ComplianceTrader else self.non_compliance_allocator()
+            this_month = position[self.clock.Month]
 
-        elif self.step > 2:  # only when the trading periods go over 3 months
-            position = kwargs.get('position', self.get_position('month'))
+        else:  # only when the trading periods go over 3 months
+            self.AnnualPosition = kwargs.get('position', sum(list(self.MonthPosition.values())))
+
+            if round(self.AnnualPosition, self.digits) == 0:
+                self.AnnualPosition = 0
+                self.DayPosition = 0
+                self.MonthPosition = {i: 0 for i in range(1, 13, 1)}
+
+            # get the minimum/maximum position under pressure or not
+            position = self.compliance_allocator() if self.ComplianceTrader else self.non_compliance_allocator()
+            # NB: position here is a dict
+            this_month = position[self.clock.Month]
+
             price = self.CarbonPrice
             factors = self.Factors
-
             # get price-driven position adjustment
             hist_price = self.cache['CarbonPrice'][-4: -1]
-            mean_price = mean(hist_price) if hist_price else 0
+            mean_price = mean(hist_price, keep_zero=False) if hist_price else 0
 
             # NB: mean price could be 0 only in tests
             mean_price = mean_price if mean_price > 0 else price
-
-            price_pressure = price / mean_price if position < 0 else mean_price / price
-            price_drive_position = price_pressure * position
+            price_pressure = price / mean_price  # a higher current price
+            price_drive_position = this_month / price_pressure if this_month < 0 else this_month * price_pressure
 
             # get quantity-driven position adjustment
-            traded_position = sum(self.cache['QuantLastComplete'])
-            qty_drive_position = position
-            if position < 0:
-                qty_gap = -position - traded_position
-                if qty_gap > 0:
-                    qty_pressure = logistic_prob(theta=factors['theta3'],
-                                                 gamma=factors['gamma3'],
-                                                 x=self.Traded)
-                    qty_drive_position = qty_pressure * position
-
-            # get the minimum/maximum position under pressure or not
-            if position < 0:
-                position_ = min([position, price_drive_position, qty_drive_position])
+            gap = self.Traded - this_month
+            if this_month < 0 and gap > 0:
+                qty_pressure = logistic_prob(theta=factors['theta3'],
+                                             gamma=factors['gamma3'],
+                                             x=gap)
+                qty_drive_position = qty_pressure * this_month
             else:
-                position_ = max([position, price_drive_position, qty_drive_position])
+                qty_drive_position = this_month
+
+            if this_month < 0:  # when firms are short of allowances, they could buy more but cannot sell more
+                position_ = min([this_month, price_drive_position, qty_drive_position])
+            else:
+                position_ = max([this_month, price_drive_position, qty_drive_position])
+                if position_ > self.AnnualPosition:
+                    position_ = self.AnnualPosition
 
             # NB: annual position cannot be easily changed!
             #     updated position for trading cannot exceed its annual position
-            position_ = min([position_, self.AnnualPosition])
-            self.MonthPosition[self.clock.Month] = round(position_, self.digits)
+            position[self.clock.Month] = round(position_, self.digits)
 
-        # run `allocation` only after the reaction of firms to the market
-        if self.ComplianceTrader:
-            # TODO: will change it to be mode-based function
-            position = self.compliance_allocator()
-        else:
-            position = self.non_compliance_allocator()
-
-        self.MonthPosition = position
+        self.MonthPosition = copy.deepcopy(position)
         # NB: update daily trading position but because the last workday is 1,
         #     at the end of month, they trade in a relatively bigger amount
-        day_position = self.get_position('month') / (self.clock.workdays_in_month(self.clock.Month))
+        day_position = this_month / (self.clock.workdays_in_month(self.clock.Month))
         self.fit(DayPosition=round(day_position, self.digits))
+        return self
 
     def get_position(self, frequency='month'):
         """Get the current trade position (this month) or the day"""
@@ -628,8 +631,7 @@ class CarbonTrade(BaseComponent):
         :param realtime_price: the realtime carbon price in the market for firm's trading decision
         """
         factors = self.Factors
-        position = self.get_position('month')
-        if position == 0:
+        if round(abs(self.DayPosition), self.digits) == 0:
             return
 
         # use the realtime price to adjust firm's trading decision
@@ -645,9 +647,9 @@ class CarbonTrade(BaseComponent):
         #       还有一种策略是，将orderbook中的订单序列和企业的预期关联起来，实时更新
         #       注意! 还有一种大宗协议交易的方式，一次性卖出或买入10万吨以上配额
         # agent trades on a daily basis, and it should be divided into even shares
-        order = Order(price=exp_price * pr,
-                      mode='sell' if position > 0 else 'buy',
-                      quantity=self.DayPosition,
+        order = Order(price=round(exp_price * pr, self.digits),
+                      mode='sell' if self.DayPosition > 0 else 'buy',
+                      quantity=round(self.DayPosition, self.digits),
                       offerer_id=self.uid,
                       ts=self.clock.timestamp())
         # firms obtain a random digit to decide if they trade or not
@@ -656,14 +658,14 @@ class CarbonTrade(BaseComponent):
     def trade(self, current_price, prob, dist='linear'):
         """Pass in the current carbon price and make a decision if doing bid/ask ..."""
         # self.ExpectCarbonPrice should be updated day by day
-        if self.lock:
+        if self.lock and self.DayPosition == 0:
             return
 
         self.CarbonPrice = current_price if current_price else self.CarbonPrice
         self.get_price(dist)
         order = self.get_decision(current_price)
         prob_ = range_prob(self.DayPosition, speed=0.05)
-        return order if prob_ >= prob else None
+        return order if prob_ >= prob and order.quantity != 0 else None
 
     def clear(self, statement: Statement):
         """Transform an order and offset the position. The frequency of calling `clear` function is
@@ -672,7 +674,9 @@ class CarbonTrade(BaseComponent):
         # if order position exceeds the monthly position, it will be distributed to the coming months
         quant = statement.quantity  # quantity in Statement is always positive
         # update the Trade&Order record
-        self.Traded += quant
+        self.Traded += abs(quant)
+        self.LastTraded = abs(quant)
+
         self.order += [statement.dict()]
         self.cache['CarbonPrice'] += [statement.price]
         # TODO: for experiment only
@@ -681,22 +685,19 @@ class CarbonTrade(BaseComponent):
         # measure cost/revenue from trading
         if position < 0:
             self.TradeCost += quant * statement.price
+            self.MonthPosition[self.clock.Month] = position + quant
         else:
             self.TradeRevenue += quant * statement.price
-            quant = -quant
+            self.MonthPosition[self.clock.Month] = position - quant
 
-        self.QuantLastComplete = quant
-        self.MonthPosition[self.clock.Month] = position + quant  # opposite
-        self.AnnualPosition += quant
-
+        # NB: prevent the firm from trading if it is lockable and its position is zero
         month_sum = sum(list(self.MonthPosition.values()))
-        min_pos = min([self.DayPosition, self.AnnualPosition, month_sum])
-        if self.lockable and abs(min_pos) < 0.001:  # 1 tonne
+        if self.lockable and round(month_sum, self.digits) == 0:  # 1 tonne
             self.lock = 1
             logger.warning(f'Firm [{self.uid}] is locked for trading.')
 
         if self.DayPosition >= self.AnnualPosition or self.DayPosition > month_sum:
-            self.adjust_position(position=min_pos)
+            self.adjust_position(position=month_sum)
         else:
             # adjust month position, day position, leave annual position unchanged
             self.adjust_position()
