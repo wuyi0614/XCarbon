@@ -28,7 +28,7 @@ def plot_kline(array, dates, ylabel='kline', name='kline-example', render=False)
                 ),
             ),
             datazoom_opts=[opts.DataZoomOpts(pos_bottom='-2%')],
-            title_opts=opts.TitleOpts(title=f'daily {name} kline', pos_left='10%'),
+            title_opts=opts.TitleOpts(title=name, pos_left='10%'),
             legend_opts=opts.LegendOpts(is_show=False)
         )
     )
@@ -38,13 +38,13 @@ def plot_kline(array, dates, ylabel='kline', name='kline-example', render=False)
     return c
 
 
-def plot_volume(volumes, dates, name='bar-volume-example', render=False):
+def plot_volume(volumes, dates, name='', render=False):
     c = (
         Bar(init_opts=opts.InitOpts(width='710px'))
             .add_xaxis(dates)
             .add_yaxis("trade volume", volumes)
             .set_global_opts(
-            title_opts=opts.TitleOpts(title=f'daily {name} volume', pos_right='10%'),
+            title_opts=opts.TitleOpts(title='', pos_right='10%'),
             datazoom_opts=[opts.DataZoomOpts(pos_bottom='-2%')],
             legend_opts=opts.LegendOpts(is_show=False)
         ).set_series_opts(markpoint_opts=opts.MarkPointItem(value=None))

@@ -2,15 +2,16 @@
 import pandas as pd
 
 from copy import deepcopy
-from typing import Optional, Union
+from typing import Optional
 from pydantic import BaseModel
 from multiprocessing import Queue
 from datetime import datetime
 from collections import OrderedDict
 
-from core.base import md5string, logger, get_current_timestamp, date_generator, alter_date, DATE_FORMATTER
+from core.base import md5string, logger, get_current_timestamp, date_generator, DATE_FORMATTER
 from core.stats import mean, get_rand_vector, sampling
 from core.config import DEFAULT_MARKET_CAP, DEFAULT_MARKET_THRESHOLD, DEFAULT_MARKET_DECAY
+from core.plot import plot_kline, plot_volume, plot_grid
 
 
 # MARKET ELEMENTS
@@ -538,10 +539,19 @@ class CarbonMarket(BaseMarket):
         bars = [item.dict() for item in self.Bars]
         return pd.DataFrame(bars)
 
-    # the following functions are for plotting
-    def display(self, **kwargs):
+    def render(self, name=None):
+        """"""
+        if not name:
+            name = f'example-{get_current_timestamp()}'
+
         report = self.to_dataframe()
-        # 使用pyecharts绘制可交互的K线
+        # k-line plotting
+        array = report[['open', 'close', 'low', 'high']].astype(float).values.tolist()
+        dates = report.ts.values.tolist()
+        c1 = plot_kline(array, dates, 'carbon price', '')
+        volumes = report['volume'].astype(float).values.round(1).tolist()
+        c2 = plot_volume(volumes, dates)
+        plot_grid(c1, c2, f'dump/{name}', True)
 
     def _create_bar_metrics(self, book, freq, mode='order'):
         if mode == 'order':
