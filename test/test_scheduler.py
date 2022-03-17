@@ -12,6 +12,7 @@ from core.firm import RegulatedFirm, populate_firm
 from core.market import CarbonMarket, OrderBook
 from core.base import Clock, read_config
 from core.plot import plot_kline, plot_volume, plot_grid
+
 from scheduler import Scheduler
 
 from pytz_deprecation_shim import PytzUsageWarning
@@ -23,6 +24,7 @@ FIRM_CONFIG = read_config('config/power-firm-20220206.json')
 ABATE_CONFIG = read_config('config/power-abate-20220206.json')
 SCHEDULER_CONFIG = read_config('config/scheduler-20211027.json')
 
+logger.remove(None)
 logger.add('test_scheduler.log', level='INFO')
 
 
@@ -38,6 +40,7 @@ def test_scheduler_daily_clear():
         reg = RegulatedFirm(clock=ck,
                             random=True,
                             role='',
+                            ComplianceTrader=0,
                             FirmConfig=FIRM_CONFIG,
                             AbateConfig=ABATE_CONFIG,
                             Energy=Energy,
@@ -61,21 +64,22 @@ def test_scheduler_daily_clear():
 
 def test_scheduler_monthly_clear():
     # In the scheduler, `run()` action will be stopped automatically at the end of the month
-    ck = Clock('2021-07-01')
+    ck = Clock('2021-01-01')
     ob = OrderBook(ck, 'day')
     cm = CarbonMarket(ob, ck, 'day')
 
     # create scheduler object
     sch = Scheduler(cm, ck, 'day', **SCHEDULER_CONFIG)
     # create agents (considering both buyer/seller, compliance/non-compliance traders)
-
-    specs = list(populate_firm('power', 100))
-    buyer_specs = sample(specs, 60)
+    pop = 1000
+    specs = list(populate_firm('power', pop))
+    buyer_specs = sample(specs, int(pop * 0.5))
     seller_specs = [item for item in specs if item not in buyer_specs]
     for spec in buyer_specs:
         buyer = RegulatedFirm(clock=ck,
                               random=True,
                               role='buyer',
+                              ComplianceTrader=sample([0, 1], 1).pop(),
                               FirmConfig=FIRM_CONFIG,
                               AbateConfig=ABATE_CONFIG,
                               Energy=Energy,
@@ -91,6 +95,7 @@ def test_scheduler_monthly_clear():
         seller = RegulatedFirm(clock=ck,
                                random=True,
                                role='seller',
+                               ComplianceTrader=sample([0, 1], 1).pop(),
                                FirmConfig=FIRM_CONFIG,
                                AbateConfig=ABATE_CONFIG,
                                Energy=Energy,
@@ -101,6 +106,8 @@ def test_scheduler_monthly_clear():
                                Finance=Finance,
                                **spec)
         sch.take(seller)
+
+    sch.run(probs=[0., 1], dist='logistic', show=True)  # demo: [0.2, 0.7]
 
     sch._run('Scheduler')
     sch.daily_clear([0.2, 0.6])
@@ -117,8 +124,8 @@ def test_scheduler_yearly_clear():
     for spec in populate_firm('power', 1000):
         firm = RegulatedFirm(clock=ck,
                              random=True,
-                             role='',
-                             compliance=0,
+                             role=sample(['buyer', 'seller'], 1).pop(),
+                             compliance=sample([0, 1], 1).pop(),
                              FirmConfig=FIRM_CONFIG,
                              AbateConfig=ABATE_CONFIG,
                              Energy=Energy,
@@ -132,16 +139,5 @@ def test_scheduler_yearly_clear():
 
     # if the left is higher (>0.5), it means small position trading is limited
     sch.run(probs=[0., 1], dist='logistic', show=True)  # demo: [0.2, 0.7]
-
-    report = cm.to_dataframe()
-    assert not report.empty, 'Market report should not be empty!'
-    array = report[['open', 'close', 'low', 'high']].astype(float).values.tolist()
-    dates = report.ts.values.tolist()
-    # draw kline price chart
-    c1 = plot_kline(array, dates, 'carbon price', 'trade-price-baseline')
-
-    # draw bar volume chart
-    volumes = report['volume'].astype(float).values.round(1).tolist()
-    c2 = plot_volume(volumes, dates)
-    plot_grid(c1, c2, 'non-compliance-no-role-pop-1000', True)
+    cm.render('all-compliance-random-roles-1000')
 
