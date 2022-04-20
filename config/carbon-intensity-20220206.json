@@ -1,0 +1,179 @@
+{
+  "power": [
+    {
+      "code": "600011.SH",
+      "name": "华能国际",
+      "income": 1694,
+      "emission": 33340,
+      "intensity": 19.68
+    },
+    {
+      "code": "600795.SH",
+      "name": "国电电力",
+      "income": 1164,
+      "emission": 24708,
+      "intensity": 21.22
+    },
+    {
+      "code": "601991.SH",
+      "name": "大唐发电",
+      "income": 956,
+      "emission": 23298,
+      "intensity": 24.37
+    },
+    {
+      "code": "600027.SH",
+      "name": "华电国际",
+      "income": 907,
+      "emission": 15271,
+      "intensity": 16.83
+    },
+    {
+      "code": "0836.HK",
+      "name": "华润电力",
+      "income": 585,
+      "emission": 14071,
+      "intensity": 24.04
+    },
+    {
+      "code": "600023.SH",
+      "name": "浙能电力",
+      "income": 517,
+      "emission": 9320,
+      "intensity": 18.03
+    },
+    {
+      "code": "600578.SH",
+      "name": "京能电力",
+      "income": 201,
+      "emission": 6593,
+      "intensity": 32.8
+    },
+    {
+      "code": "000539.SZ",
+      "name": "粤电力A",
+      "income": 283,
+      "emission": 5264,
+      "intensity": 18.58
+    },
+    {
+      "code": "2380.HK",
+      "name": "中国电力",
+      "income": 284,
+      "emission": 4795,
+      "intensity": 16.87
+    },
+    {
+      "code": "600863.SH",
+      "name": "内蒙华电",
+      "income": 154,
+      "emission": 4632,
+      "intensity": 30.15
+    },
+    {
+      "code": "0002.HK",
+      "name": "中电控股",
+      "income": 670,
+      "emission": 4535,
+      "intensity": 6.77
+    },
+    {
+      "code": "600886.SH",
+      "name": "国投电力",
+      "income": 393,
+      "emission": 4268,
+      "intensity": 10.85
+    },
+    {
+      "code": "000600.SZ",
+      "name": "建投能源",
+      "income": 142,
+      "emission": 3694,
+      "intensity": 25.98
+    },
+    {
+      "code": "600021.SH",
+      "name": "上海电力",
+      "income": 242,
+      "emission": 3009,
+      "intensity": 12.43
+    },
+    {
+      "code": "000767.SZ",
+      "name": "晋控电力",
+      "income": 117,
+      "emission": 2924,
+      "intensity": 25.02
+    },
+    {
+      "code": "000543.SZ",
+      "name": "皖能电力",
+      "income": 168,
+      "emission": 2813,
+      "intensity": 16.79
+    },
+    {
+      "code": "600726.SH",
+      "name": "华电能源",
+      "income": 107,
+      "emission": 2577,
+      "intensity": 24.15
+    },
+    {
+      "code": "000027.SZ",
+      "name": "深圳能源",
+      "income": 205,
+      "emission": 2359,
+      "intensity": 11.53
+    },
+    {
+      "code": "600642.SH",
+      "name": "申能股份",
+      "income": 197,
+      "emission": 1882,
+      "intensity": 9.55
+    },
+    {
+      "code": "600396.SH",
+      "name": "金山股份",
+      "income": 73,
+      "emission": 1843,
+      "intensity": 25.3
+    },
+    {
+      "code": "001896.SZ",
+      "name": "豫能控股",
+      "income": 87,
+      "emission": 1690,
+      "intensity": 19.47
+    },
+    {
+      "code": "600744.SH",
+      "name": "华银电力",
+      "income": 83,
+      "emission": 1579,
+      "intensity": 19.12
+    },
+    {
+      "code": "000883.SZ",
+      "name": "湖北能源",
+      "income": 170,
+      "emission": 1325,
+      "intensity": 7.78
+    },
+    {
+      "code": "600483.SH",
+      "name": "福能股份",
+      "income": 96,
+      "emission": 1237,
+      "intensity": 12.94
+    },
+    {
+      "code": "600098.SH",
+      "name": "广州发展",
+      "income": 317,
+      "emission": 1225,
+      "intensity": 3.86
+    }
+  ]
+}
